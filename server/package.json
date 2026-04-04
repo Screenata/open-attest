@@ -1,6 +1,6 @@
 {
   "name": "open-attest-server",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "scripts": {
     "build:admin": "cd admin && npm run build",
