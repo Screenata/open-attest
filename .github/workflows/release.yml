@@ -61,6 +61,43 @@ jobs:
           name: macos-${{ matrix.target }}
           path: "*.pkg"
 
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: ${{ matrix.target }}
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - run: cargo build --release --target ${{ matrix.target }}
+        working-directory: agent
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - run: cargo test
+        working-directory: agent
+      - name: Package tarball
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCH=$(echo "${{ matrix.target }}" | sed 's/-unknown-linux-gnu//')
+          mkdir -p release
+          cp agent/target/${{ matrix.target }}/release/open-attest release/
+          chmod 755 release/open-attest
+          tar -czf "open-attest-${VERSION}-linux-${ARCH}.tar.gz" -C release open-attest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: "*.tar.gz"
+
   build-windows:
     name: Build Windows
     runs-on: windows-latest
@@ -128,7 +165,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,4 +179,6 @@ jobs:
           files: |
             artifacts/macos-x86_64-apple-darwin/*.pkg
             artifacts/macos-aarch64-apple-darwin/*.pkg
+            artifacts/linux-x86_64-unknown-linux-gnu/*.tar.gz
+            artifacts/linux-aarch64-unknown-linux-gnu/*.tar.gz
             artifacts/windows-x86_64/*.exe

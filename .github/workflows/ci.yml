@@ -61,6 +61,35 @@ jobs:
           name: open-attest-${{ matrix.target }}
           path: agent/target/${{ matrix.target }}/release/open-attest
 
+  agent-build-linux:
+    name: Build Agent (Linux)
+    needs: [server-test, agent-test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: ${{ matrix.target }}
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - run: cargo build --release --target ${{ matrix.target }}
+        working-directory: agent
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-attest-${{ matrix.target }}
+          path: agent/target/${{ matrix.target }}/release/open-attest
+
   agent-build-windows:
     name: Build Agent (Windows)
     needs: [server-test, agent-test]
