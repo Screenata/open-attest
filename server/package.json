@@ -1,0 +1,25 @@
+{
+  "name": "open-attest-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply open-attest --local",
+    "db:migrate:production": "wrangler d1 migrations apply open-attest --remote",
+    "deploy:production": "npm run db:migrate:production && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.30",
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.7.0",
+    "vitest": "~2.1.8",
+    "wrangler": "^4.80.0"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2"
+  }
+}

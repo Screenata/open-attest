@@ -1,0 +1,14 @@
+name = "open-attest-server"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ADMIN_SECRET is set via: wrangler secret put ADMIN_SECRET
+# For local dev, override in .dev.vars file:
+#   ADMIN_SECRET=dev-secret-change-me
+
+[[d1_databases]]
+binding = "DB"
+database_name = "open-attest"
+database_id = "de249f98-2c7a-474f-9104-431ad57d78e7"  # Run: wrangler d1 create open-attest
+migrations_dir = "drizzle/migrations"

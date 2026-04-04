@@ -1,0 +1,25 @@
+[package]
+name = "open-attest"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "open-attest"
+path = "src/main.rs"
+
+[dependencies]
+open-attest-types = { path = "../types" }
+open-attest-signer = { path = "../signer" }
+open-attest-collector = { path = "../collector" }
+open-attest-config = { path = "../config" }
+open-attest-transport = { path = "../transport" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+uuid = { version = "1", features = ["v7"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"

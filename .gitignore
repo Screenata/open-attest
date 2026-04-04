@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Rust
+target/
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# OS
+.DS_Store
+
+# Context
+.context/
+
+# Internal docs (not open-sourced)
+docs/RFC.md

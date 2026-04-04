@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+        working-directory: agent
+      - run: cargo test
+        working-directory: agent
+      - name: Package .pkg
+        run: |
+          ARCH_SHORT=$(echo "${{ matrix.target }}" | sed 's/-apple-darwin//')
+          VERSION=${GITHUB_REF_NAME#v}
+
+          BUILD_DIR=$(mktemp -d)
+          mkdir -p "$BUILD_DIR/payload/usr/local/bin"
+          cp agent/target/${{ matrix.target }}/release/open-attest "$BUILD_DIR/payload/usr/local/bin/open-attest"
+          chmod 755 "$BUILD_DIR/payload/usr/local/bin/open-attest"
+
+          mkdir -p "$BUILD_DIR/scripts"
+          cat > "$BUILD_DIR/scripts/postinstall" << 'EOF'
+          #!/bin/bash
+          echo ""
+          echo "open-attest installed to /usr/local/bin/open-attest"
+          echo "To complete setup: open-attest enroll --token <TOKEN> --server <URL>"
+          echo ""
+          EOF
+          chmod 755 "$BUILD_DIR/scripts/postinstall"
+
+          pkgbuild \
+            --root "$BUILD_DIR/payload" \
+            --scripts "$BUILD_DIR/scripts" \
+            --identifier com.open-attest.agent \
+            --version "$VERSION" \
+            --install-location "/" \
+            "open-attest-${VERSION}-${ARCH_SHORT}.pkg"
+
+          rm -rf "$BUILD_DIR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: "*.pkg"
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: x86_64-pc-windows-msvc
+      - run: cargo build --release --target x86_64-pc-windows-msvc
+        working-directory: agent
+      - run: cargo test
+        working-directory: agent
+      - name: Package installer
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+
+          @"
+          [Setup]
+          AppName=open-attest
+          AppVersion=$version
+          AppPublisher=Screenata
+          DefaultDirName={autopf}\open-attest
+          DefaultGroupName=open-attest
+          OutputDir=.
+          OutputBaseFilename=open-attest-$version-x86_64-windows
+          Compression=lzma
+          SolidCompression=yes
+          ChangesEnvironment=yes
+          PrivilegesRequired=admin
+
+          [Files]
+          Source: "agent\target\x86_64-pc-windows-msvc\release\open-attest.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Registry]
+          Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}')
+
+          [Code]
+          function NeedsAddPath(Param: string): boolean;
+          var
+            OrigPath: string;
+          begin
+            if not RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath)
+            then begin
+              Result := True;
+              exit;
+            end;
+            Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+          end;
+
+          [Run]
+          Filename: "{cmd}"; Parameters: "/c echo. & echo open-attest installed. Run: open-attest enroll --token TOKEN --server URL & pause"; Description: "Show setup instructions"; Flags: postinstall nowait
+          "@ | Out-File -Encoding ASCII inno.iss
+
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" inno.iss
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: "*.exe"
+
+  release:
+    name: Create Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/macos-x86_64-apple-darwin/*.pkg
+            artifacts/macos-aarch64-apple-darwin/*.pkg
+            artifacts/windows-x86_64/*.exe

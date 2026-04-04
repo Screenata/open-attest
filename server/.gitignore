@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Rust
+target/
+
+# Cloudflare
+.wrangler/
+
+# OS
+.DS_Store
+
+# Context
+.context/

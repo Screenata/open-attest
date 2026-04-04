@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  server-test:
+    name: Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+
+  agent-test:
+    name: Agent Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+      - run: cargo test
+        working-directory: agent
+
+  agent-build-macos:
+    name: Build Agent (macOS)
+    needs: [server-test, agent-test]
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+        working-directory: agent
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-attest-${{ matrix.target }}
+          path: agent/target/${{ matrix.target }}/release/open-attest
+
+  agent-build-windows:
+    name: Build Agent (Windows)
+    needs: [server-test, agent-test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: x86_64-pc-windows-msvc
+      - run: cargo build --release --target x86_64-pc-windows-msvc
+        working-directory: agent
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-attest-x86_64-pc-windows-msvc
+          path: agent/target/x86_64-pc-windows-msvc/release/open-attest.exe
+
+  package-macos:
+    name: Package macOS (.pkg)
+    needs: agent-build-macos
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: open-attest-${{ matrix.arch }}
+          path: bin
+      - name: Build .pkg
+        run: |
+          chmod +x bin/open-attest
+          ARCH_SHORT=$(echo "${{ matrix.arch }}" | sed 's/-apple-darwin//')
+
+          # Create payload
+          BUILD_DIR=$(mktemp -d)
+          mkdir -p "$BUILD_DIR/payload/usr/local/bin"
+          cp bin/open-attest "$BUILD_DIR/payload/usr/local/bin/open-attest"
+          chmod 755 "$BUILD_DIR/payload/usr/local/bin/open-attest"
+
+          # Create postinstall that prints instructions (no embedded token for CI builds)
+          mkdir -p "$BUILD_DIR/scripts"
+          cat > "$BUILD_DIR/scripts/postinstall" << 'EOF'
+          #!/bin/bash
+          echo ""
+          echo "open-attest installed to /usr/local/bin/open-attest"
+          echo ""
+          echo "To complete setup, run:"
+          echo "  open-attest enroll --token <TOKEN> --server <SERVER_URL>"
+          echo ""
+          EOF
+          chmod 755 "$BUILD_DIR/scripts/postinstall"
+
+          pkgbuild \
+            --root "$BUILD_DIR/payload" \
+            --scripts "$BUILD_DIR/scripts" \
+            --identifier com.open-attest.agent \
+            --version 0.2.0 \
+            --install-location "/" \
+            "open-attest-${ARCH_SHORT}.pkg"
+
+          rm -rf "$BUILD_DIR"
+      - name: Upload .pkg
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-attest-${{ matrix.arch }}.pkg
+          path: "*.pkg"
+
+  package-windows:
+    name: Package Windows (.msi)
+    needs: agent-build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: open-attest-x86_64-pc-windows-msvc
+          path: bin
+      - name: Build installer with Inno Setup
+        run: |
+          # Create Inno Setup script
+          @"
+          [Setup]
+          AppName=open-attest
+          AppVersion=0.2.0
+          AppPublisher=Screenata
+          DefaultDirName={autopf}\open-attest
+          DefaultGroupName=open-attest
+          OutputDir=.
+          OutputBaseFilename=open-attest-x86_64-windows
+          Compression=lzma
+          SolidCompression=yes
+          ChangesEnvironment=yes
+          PrivilegesRequired=admin
+
+          [Files]
+          Source: "bin\open-attest.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Registry]
+          Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
+            ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
+            Check: NeedsAddPath('{app}')
+
+          [Code]
+          function NeedsAddPath(Param: string): boolean;
+          var
+            OrigPath: string;
+          begin
+            if not RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath)
+            then begin
+              Result := True;
+              exit;
+            end;
+            Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+          end;
+
+          [Run]
+          Filename: "{cmd}"; Parameters: "/c echo. & echo open-attest installed. & echo Run: open-attest enroll --token TOKEN --server SERVER_URL & echo. & pause"; \
+            Description: "Show setup instructions"; Flags: postinstall nowait
+          "@ | Out-File -Encoding ASCII inno.iss
+
+          # Install Inno Setup
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" inno.iss
+        shell: pwsh
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-attest-x86_64-windows.exe
+          path: open-attest-x86_64-windows.exe
