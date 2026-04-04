@@ -1,7 +1,11 @@
+#[cfg(target_os = "macos")]
 use chrono::Utc;
+#[cfg(target_os = "macos")]
 use open_attest_types::{CheckResult, CheckValue};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
