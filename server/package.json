@@ -5,6 +5,7 @@
   "scripts": {
     "build:admin": "cd admin && npm run build",
     "dev": "npm run build:admin && wrangler dev",
+    "pretest": "mkdir -p admin/dist/admin",
     "test": "vitest run",
     "deploy": "npm run build:admin && wrangler deploy",
     "db:generate": "drizzle-kit generate",
