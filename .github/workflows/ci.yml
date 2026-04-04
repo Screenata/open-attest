@@ -12,12 +12,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm ci
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
         working-directory: server
-      - run: npm test
+      - run: pnpm test
         working-directory: server
 
   agent-test:
@@ -96,13 +101,11 @@ jobs:
           chmod +x bin/open-attest
           ARCH_SHORT=$(echo "${{ matrix.arch }}" | sed 's/-apple-darwin//')
 
-          # Create payload
           BUILD_DIR=$(mktemp -d)
           mkdir -p "$BUILD_DIR/payload/usr/local/bin"
           cp bin/open-attest "$BUILD_DIR/payload/usr/local/bin/open-attest"
           chmod 755 "$BUILD_DIR/payload/usr/local/bin/open-attest"
 
-          # Create postinstall that prints instructions (no embedded token for CI builds)
           mkdir -p "$BUILD_DIR/scripts"
           cat > "$BUILD_DIR/scripts/postinstall" << 'EOF'
           #!/bin/bash
@@ -131,7 +134,7 @@ jobs:
           path: "*.pkg"
 
   package-windows:
-    name: Package Windows (.msi)
+    name: Package Windows (.exe)
     needs: agent-build-windows
     runs-on: windows-latest
     steps:
@@ -143,7 +146,6 @@ jobs:
           path: bin
       - name: Build installer with Inno Setup
         run: |
-          # Create Inno Setup script
           @"
           [Setup]
           AppName=open-attest
@@ -162,9 +164,7 @@ jobs:
           Source: "bin\open-attest.exe"; DestDir: "{app}"; Flags: ignoreversion
 
           [Registry]
-          Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-            ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
-            Check: NeedsAddPath('{app}')
+          Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}')
 
           [Code]
           function NeedsAddPath(Param: string): boolean;
@@ -180,11 +180,9 @@ jobs:
           end;
 
           [Run]
-          Filename: "{cmd}"; Parameters: "/c echo. & echo open-attest installed. & echo Run: open-attest enroll --token TOKEN --server SERVER_URL & echo. & pause"; \
-            Description: "Show setup instructions"; Flags: postinstall nowait
+          Filename: "{cmd}"; Parameters: "/c echo. & echo open-attest installed. Run: open-attest enroll --token TOKEN --server URL & pause"; Description: "Show setup instructions"; Flags: postinstall nowait
           "@ | Out-File -Encoding ASCII inno.iss
 
-          # Install Inno Setup
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" inno.iss
         shell: pwsh
