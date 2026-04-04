@@ -7,6 +7,8 @@ export const enrollmentTokens = sqliteTable('enrollment_tokens', {
   orgId: text('org_id').notNull(),
   used: integer('used').default(0).notNull(),
   revoked: integer('revoked').default(0).notNull(),
+  maxUses: integer('max_uses').default(1).notNull(),
+  useCount: integer('use_count').default(0).notNull(),
   expiresAt: text('expires_at').notNull(),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
 });

@@ -67,7 +67,7 @@ export async function handleCreateToken(request: Request, env: Env): Promise<Res
   const authErr = authenticateSecret(request, env);
   if (authErr) return authErr;
 
-  let body: { org_id: string; expires_in_hours?: number };
+  let body: { org_id: string; expires_in_hours?: number; max_uses?: number };
   try {
     body = await request.json();
   } catch {
@@ -79,6 +79,7 @@ export async function handleCreateToken(request: Request, env: Env): Promise<Res
   }
 
   const ttlHours = body.expires_in_hours ?? 24;
+  const maxUses = body.max_uses ?? 1;
   const expiresAt = new Date(Date.now() + ttlHours * 3600_000).toISOString();
   const token = `oat_${crypto.randomUUID().replace(/-/g, '')}`;
   const id = `tok_${crypto.randomUUID()}`;
@@ -88,15 +89,20 @@ export async function handleCreateToken(request: Request, env: Env): Promise<Res
     id,
     token,
     orgId: body.org_id,
+    maxUses,
     expiresAt,
   });
+
+  const enrollUrl = new URL(`/enroll/${token}`, request.url).toString();
 
   return new Response(
     JSON.stringify({
       token,
+      enroll_url: enrollUrl,
       org_id: body.org_id,
       expires_at: expiresAt,
       expires_in_hours: ttlHours,
+      max_uses: maxUses,
     }),
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   );
@@ -172,6 +178,8 @@ export async function handleListTokens(request: Request, env: Env): Promise<Resp
         org_id: t.orgId,
         used: !!t.used,
         revoked: !!t.revoked,
+        max_uses: t.maxUses,
+        use_count: t.useCount,
         expires_at: t.expiresAt,
         created_at: t.createdAt,
         expired: new Date(t.expiresAt) < new Date(),

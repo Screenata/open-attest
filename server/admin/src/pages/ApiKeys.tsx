@@ -32,6 +32,8 @@ type TokenInfo = {
   org_id: string;
   used: boolean;
   revoked: boolean;
+  max_uses: number;
+  use_count: number;
   expires_at: string;
   created_at: string;
   expired: boolean;
@@ -259,6 +261,7 @@ export default function ApiKeys() {
                   <TableHead>Token</TableHead>
                   <TableHead>Org</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Usage</TableHead>
                   <TableHead>Expires</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
@@ -266,7 +269,7 @@ export default function ApiKeys() {
               <TableBody>
                 {tokens.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center">
+                    <TableCell colSpan={6} className="h-24 text-center">
                       <div className="flex flex-col items-center gap-2 text-muted-foreground">
                         <Ticket className="h-6 w-6" />
                         <p className="text-sm font-medium">No enrollment tokens yet</p>
@@ -285,6 +288,9 @@ export default function ApiKeys() {
                       </TableCell>
                       <TableCell>{t.org_id}</TableCell>
                       <TableCell>{tokenStatus(t)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {t.use_count}/{t.max_uses}
+                      </TableCell>
                       <TableCell className={t.expired ? 'text-muted-foreground' : ''}>
                         {new Date(t.expires_at).toLocaleString()}
                       </TableCell>

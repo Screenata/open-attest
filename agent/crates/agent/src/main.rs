@@ -140,10 +140,73 @@ fn do_status() -> Result<()> {
     Ok(())
 }
 
-fn do_check() -> Result<()> {
+fn evaluate_compliance(check: &CheckResult) -> Option<&'static str> {
+    fn bool_pass_fail(v: &CheckValue) -> Option<&'static str> {
+        match v { CheckValue::Bool(v) => Some(if *v { "PASS" } else { "FAIL" }), _ => None }
+    }
+    match check.key.as_str() {
+        "disk_encryption.enabled" | "firewall.enabled" | "screen_lock.password_required" | "password.enabled"
+            => bool_pass_fail(&check.value),
+        "edr.present" => match &check.value {
+            CheckValue::Bool(v) => Some(if *v { "PASS" } else { "WARN" }),
+            _ => None,
+        },
+        "screen_lock.timeout_minutes" => match &check.value {
+            CheckValue::Int(v) => Some(if *v > 0 && *v <= 15 { "PASS" } else { "FAIL" }),
+            _ => None,
+        },
+        "password_policy.min_length" => match &check.value {
+            CheckValue::Int(v) => Some(if *v >= 8 { "PASS" } else { "FAIL" }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn do_check(json_output: bool) -> Result<()> {
     let checks = collect_all();
-    let json = serde_json::to_string_pretty(&checks)?;
-    println!("{}", json);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&checks)?;
+        println!("{}", json);
+        return Ok(());
+    }
+
+    // Print table header
+    println!("{:<35} {:<30} {}", "CHECK", "VALUE", "STATUS");
+    println!("{}", "-".repeat(75));
+
+    for check in &checks {
+        let value_str = match &check.value {
+            CheckValue::Bool(v) => format!("{}", v),
+            CheckValue::Int(v) => format!("{}", v),
+            CheckValue::Str(v) => v.clone(),
+            CheckValue::StringList(v) => v.join(", "),
+        };
+
+        let status = evaluate_compliance(check).unwrap_or("\u{2014}");
+
+        println!("{:<35} {:<30} {}", check.key, value_str, status);
+    }
+
+    // Summary — single pass
+    let (mut passing, mut failing, mut warnings) = (0, 0, 0);
+    for check in &checks {
+        match evaluate_compliance(check) {
+            Some("PASS") => passing += 1,
+            Some("FAIL") => failing += 1,
+            Some("WARN") => warnings += 1,
+            _ => {}
+        }
+    }
+    let total_evaluated = passing + failing + warnings;
+
+    println!();
+    println!(
+        "{}/{} checks passing, {} failing, {} warnings",
+        passing, total_evaluated, failing, warnings
+    );
+
     Ok(())
 }
 
@@ -227,6 +290,19 @@ fn do_uninstall() -> Result<()> {
     }
 
     println!("Agent uninstalled successfully.");
+    Ok(())
+}
+
+fn do_web() -> Result<()> {
+    let cfg = config::load()?;
+    let url = format!("{}/admin/", cfg.server_url);
+    println!("Opening {}", url);
+    #[cfg(target_os = "macos")]
+    Command::new("open").arg(&url).spawn()?;
+    #[cfg(target_os = "windows")]
+    Command::new("cmd").args(["/c", "start", &url]).spawn()?;
+    #[cfg(target_os = "linux")]
+    Command::new("xdg-open").arg(&url).spawn()?;
     Ok(())
 }
 
@@ -409,10 +485,11 @@ async fn main() {
     let result = match cli.command {
         Commands::Enroll { token, server } => do_enroll(token, server),
         Commands::Status => do_status(),
-        Commands::Check => do_check(),
+        Commands::Check { json } => do_check(json),
         Commands::Attest => do_attest(),
         Commands::Uninstall => do_uninstall(),
         Commands::Daemon => do_daemon().await,
+        Commands::Web => do_web(),
     };
 
     if let Err(e) = result {

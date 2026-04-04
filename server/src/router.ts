@@ -7,6 +7,7 @@ import { handleHeartbeat } from './routes/heartbeat';
 import { handleRekey } from './routes/rekey';
 import { handleListDevices, handleGetDevice } from './routes/devices';
 import { handleCreateApiKey, handleListApiKeys, handleDeleteApiKey, handleCreateToken, handleListTokens, handleAdminStatus } from './routes/admin';
+import { handleEnrollmentPage } from './routes/enrollment-page';
 
 export async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -50,6 +51,13 @@ export async function route(request: Request, env: Env): Promise<Response> {
 
   if (method === 'GET' && path === '/v1/admin/status') {
     return handleAdminStatus(request, env);
+  }
+
+  // --- Enrollment page (public, no auth) ---
+
+  const enrollPageMatch = path.match(/^\/enroll\/([^/]+)$/);
+  if (method === 'GET' && enrollPageMatch) {
+    return handleEnrollmentPage(request, env, enrollPageMatch[1]);
   }
 
   // --- Agent endpoints ---

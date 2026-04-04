@@ -1,3 +1,4 @@
+mod linux;
 mod macos;
 mod windows;
 
@@ -13,12 +14,17 @@ pub fn collect_all() -> Vec<CheckResult> {
     {
         windows::collect_all()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::collect_all()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         vec![]
     }
 }
 
 // Re-export parsers so tests can access them regardless of platform.
+pub use linux::parsers as linux_parsers;
 pub use macos::parsers as macos_parsers;
 pub use windows::parsers as windows_parsers;

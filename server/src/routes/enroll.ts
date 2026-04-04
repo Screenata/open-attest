@@ -1,5 +1,5 @@
 import { apiError } from '../errors';
-import { createDb, getTokenByValue, insertAgent, markTokenUsed } from '../db';
+import { createDb, getTokenByValue, insertAgent, incrementTokenUseCount } from '../db';
 import { EnrollmentRequest, EnrollmentResponse, Env } from '../types';
 
 export async function handleEnroll(request: Request, env: Env): Promise<Response> {
@@ -30,8 +30,9 @@ export async function handleEnroll(request: Request, env: Env): Promise<Response
     return apiError('FORBIDDEN', 'Enrollment token has been revoked');
   }
 
-  if (token.used) {
-    return apiError('TOKEN_ALREADY_USED', 'Enrollment token has already been used');
+  // Multi-use: check useCount against maxUses
+  if (token.useCount >= token.maxUses) {
+    return apiError('TOKEN_ALREADY_USED', 'Enrollment token has reached its usage limit');
   }
 
   const now = new Date().toISOString();
@@ -54,7 +55,7 @@ export async function handleEnroll(request: Request, env: Env): Promise<Response
     deviceId,
   });
 
-  await markTokenUsed(db, token.id);
+  await incrementTokenUseCount(db, token.id, token.useCount, token.maxUses);
 
   const response: EnrollmentResponse = {
     agent_id: agentId,

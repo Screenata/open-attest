@@ -18,7 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import CheckBadge from '@/components/CheckBadge';
+import { CheckValueBadge, CheckStatusBadge, evaluateCompliance } from '@/components/CheckBadge';
 import { useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
@@ -49,10 +49,16 @@ interface Device {
   last_seen_at: string;
 }
 
+type CheckValueWire =
+  | { type: 'bool'; value: boolean }
+  | { type: 'int'; value: number }
+  | { type: 'string'; value: string }
+  | { type: 'string_list'; value: string[] };
+
 interface Check {
   device_id: string;
   check_key: string;
-  check_value: unknown;
+  check_value: CheckValueWire;
   observed_at: string;
   source: string;
 }
@@ -263,6 +269,7 @@ export default function DeviceDetail() {
                 <TableRow>
                   <TableHead>Check</TableHead>
                   <TableHead>Value</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Source</TableHead>
                   <TableHead>Observed At</TableHead>
                 </TableRow>
@@ -274,10 +281,10 @@ export default function DeviceDetail() {
                       {check.check_key}
                     </TableCell>
                     <TableCell>
-                      <CheckBadge
-                        checkKey={check.check_key}
-                        checkValue={check.check_value}
-                      />
+                      <CheckValueBadge checkValue={check.check_value} />
+                    </TableCell>
+                    <TableCell>
+                      <CheckStatusBadge status={evaluateCompliance(check.check_key, check.check_value)} />
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{check.source}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">

@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS enrollment_tokens (
   org_id TEXT NOT NULL,
   used INTEGER DEFAULT 0,
   revoked INTEGER DEFAULT 0,
+  max_uses INTEGER DEFAULT 1 NOT NULL,
+  use_count INTEGER DEFAULT 0 NOT NULL,
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -77,6 +79,8 @@ export async function seedToken(
     org_id?: string;
     used?: number;
     revoked?: number;
+    max_uses?: number;
+    use_count?: number;
     expires_at?: string;
   } = {},
 ): Promise<{ id: string; token: string; org_id: string }> {
@@ -84,6 +88,8 @@ export async function seedToken(
   const id = overrides.id ?? `tok_${crypto.randomUUID()}`;
   const token = overrides.token ?? `enroll_${crypto.randomUUID()}`;
   const org_id = overrides.org_id ?? `org_${crypto.randomUUID()}`;
+  const maxUses = overrides.max_uses ?? 1;
+  const useCount = overrides.use_count ?? (overrides.used ? maxUses : 0);
 
   await db.insert(schema.enrollmentTokens).values({
     id,
@@ -91,6 +97,8 @@ export async function seedToken(
     orgId: org_id,
     used: overrides.used ?? 0,
     revoked: overrides.revoked ?? 0,
+    maxUses,
+    useCount,
     expiresAt: overrides.expires_at ?? new Date(Date.now() + 3600_000).toISOString(),
   });
 

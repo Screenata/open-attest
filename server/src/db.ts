@@ -14,8 +14,12 @@ export async function getTokenByValue(db: DB, tokenValue: string) {
   return db.select().from(schema.enrollmentTokens).where(eq(schema.enrollmentTokens.token, tokenValue)).get();
 }
 
-export async function markTokenUsed(db: DB, id: string) {
-  await db.update(schema.enrollmentTokens).set({ used: 1 }).where(eq(schema.enrollmentTokens.id, id));
+export async function incrementTokenUseCount(db: DB, id: string, currentUseCount: number, maxUses: number) {
+  const updated = currentUseCount + 1;
+  await db.update(schema.enrollmentTokens).set({
+    useCount: updated,
+    used: updated >= maxUses ? 1 : 0,
+  }).where(eq(schema.enrollmentTokens.id, id));
 }
 
 // --- Agents ---
