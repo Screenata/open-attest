@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 open-attest-types = { path = "../types" }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+openssl = { version = "0.10", features = ["vendored"] }
 serde_json = "1"
 anyhow = "1"
 base64 = "0.22"
