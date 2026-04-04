@@ -9,6 +9,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "admin/dist"
+binding = "ASSETS"
+not_found_handling = "none"
 
 [[d1_databases]]
 binding = "DB"

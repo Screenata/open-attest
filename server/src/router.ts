@@ -101,13 +101,10 @@ export async function route(request: Request, env: Env): Promise<Response> {
   // SPA fallback — for /admin/* routes that aren't static files,
   // serve index.html so React Router handles client-side routing
   if (method === 'GET' && path.startsWith('/admin')) {
-    // Redirect /admin to /admin/
     if (path === '/admin') {
       return new Response(null, { status: 302, headers: { Location: '/admin/' } });
     }
-    // Serve the SPA index.html by fetching it from the assets
-    const indexUrl = new URL('/admin/index.html', request.url);
-    return fetch(indexUrl);
+    return env.ASSETS.fetch(new Request(new URL('/admin/index.html', request.url), request));
   }
 
   return apiError('NOT_FOUND', `No route found for ${method} ${path}`);

@@ -95,4 +95,5 @@ export type AdminApiKeyRow = InferSelectModel<typeof schema.adminApiKeys>;
 export interface Env {
   DB: D1Database;
   ADMIN_SECRET: string;
+  ASSETS: Fetcher;
 }
