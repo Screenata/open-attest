@@ -32,7 +32,7 @@ function checkToWire(c: DeviceCheckRow) {
 export async function handleListDevices(request: Request, env: Env): Promise<Response> {
   const db = createDb(env.DB);
 
-  const authResult = await authenticateAdmin(request, db);
+  const authResult = await authenticateAdmin(request, db, env);
   if (authResult instanceof Response) {
     return authResult;
   }
@@ -69,7 +69,7 @@ export async function handleListDevices(request: Request, env: Env): Promise<Res
 export async function handleGetDevice(request: Request, env: Env, deviceId: string): Promise<Response> {
   const db = createDb(env.DB);
 
-  const authResult = await authenticateAdmin(request, db);
+  const authResult = await authenticateAdmin(request, db, env);
   if (authResult instanceof Response) {
     return authResult;
   }

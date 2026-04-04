@@ -6,7 +6,7 @@ import { Env } from '../types';
 export async function handleRevoke(request: Request, env: Env): Promise<Response> {
   const db = createDb(env.DB);
 
-  const authResult = await authenticateAdmin(request, db);
+  const authResult = await authenticateAdmin(request, db, env);
   if (authResult instanceof Response) {
     return authResult;
   }

@@ -132,15 +132,28 @@ describe('GET /v1/admin/status', () => {
     expect(res.status).toBe(200);
     const body = await res.json<any>();
     expect(body.status).toBe('ok');
-    expect(body.stats.agents_active).toBe(0);
+    expect(body.stats.devices_total).toBe(0);
+    expect(body.stats.devices_compliant).toBe(0);
     expect(body.stats.tokens_available).toBe(0);
   });
 });
 
 describe('GET /', () => {
+  it('should redirect to admin UI', async () => {
+    const res = await worker.fetch(
+      new Request('http://localhost/', { method: 'GET', redirect: 'manual' }),
+      { DB, ADMIN_SECRET } as any,
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/admin/');
+  });
+});
+
+describe('GET /health', () => {
   it('should return health check', async () => {
     const res = await worker.fetch(
-      new Request('http://localhost/', { method: 'GET' }),
+      new Request('http://localhost/health', { method: 'GET' }),
       { DB, ADMIN_SECRET } as any,
     );
 

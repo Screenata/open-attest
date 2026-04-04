@@ -6,15 +6,20 @@ import { handlePostAttestation, handleGetAttestation } from './routes/attestatio
 import { handleHeartbeat } from './routes/heartbeat';
 import { handleRekey } from './routes/rekey';
 import { handleListDevices, handleGetDevice } from './routes/devices';
-import { handleCreateApiKey, handleCreateToken, handleAdminStatus } from './routes/admin';
+import { handleCreateApiKey, handleListApiKeys, handleDeleteApiKey, handleCreateToken, handleListTokens, handleAdminStatus } from './routes/admin';
 
 export async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
 
-  // Root — health check
+  // Root — redirect to admin UI
   if (method === 'GET' && path === '/') {
+    return new Response(null, { status: 302, headers: { Location: '/admin/' } });
+  }
+
+  // Health check
+  if (method === 'GET' && path === '/health') {
     return new Response(JSON.stringify({ name: 'open-attest', version: '0.2.0', status: 'ok' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -27,8 +32,20 @@ export async function route(request: Request, env: Env): Promise<Response> {
     return handleCreateApiKey(request, env);
   }
 
+  if (method === 'GET' && path === '/v1/admin/api-keys') {
+    return handleListApiKeys(request, env);
+  }
+
+  if (method === 'DELETE' && path === '/v1/admin/api-keys') {
+    return handleDeleteApiKey(request, env);
+  }
+
   if (method === 'POST' && path === '/v1/admin/tokens') {
     return handleCreateToken(request, env);
+  }
+
+  if (method === 'GET' && path === '/v1/admin/tokens') {
+    return handleListTokens(request, env);
   }
 
   if (method === 'GET' && path === '/v1/admin/status') {
@@ -71,6 +88,18 @@ export async function route(request: Request, env: Env): Promise<Response> {
   const attestationMatch = path.match(/^\/v1\/attestations\/([^/]+)$/);
   if (method === 'GET' && attestationMatch) {
     return handleGetAttestation(request, env, attestationMatch[1]);
+  }
+
+  // SPA fallback — for /admin/* routes that aren't static files,
+  // serve index.html so React Router handles client-side routing
+  if (method === 'GET' && path.startsWith('/admin')) {
+    // Redirect /admin to /admin/
+    if (path === '/admin') {
+      return new Response(null, { status: 302, headers: { Location: '/admin/' } });
+    }
+    // Serve the SPA index.html by fetching it from the assets
+    const indexUrl = new URL('/admin/index.html', request.url);
+    return fetch(indexUrl);
   }
 
   return apiError('NOT_FOUND', `No route found for ${method} ${path}`);

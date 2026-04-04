@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { apiError } from '../errors';
 import { createDb } from '../db';
 import * as schema from '../schema';
@@ -101,6 +102,85 @@ export async function handleCreateToken(request: Request, env: Env): Promise<Res
   );
 }
 
+// GET /v1/admin/api-keys — list API keys (metadata only, no key values)
+export async function handleListApiKeys(request: Request, env: Env): Promise<Response> {
+  const authErr = authenticateSecret(request, env);
+  if (authErr) return authErr;
+
+  const db = createDb(env.DB);
+  const keys = await db.select().from(schema.adminApiKeys).all();
+
+  return new Response(
+    JSON.stringify({
+      api_keys: keys.map((k) => ({
+        key_hash_prefix: k.keyHash.slice(0, 8) + '...',
+        org_id: k.orgId,
+        label: k.label,
+        created_at: k.createdAt,
+      })),
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+// DELETE /v1/admin/api-keys — delete an API key by hash prefix
+export async function handleDeleteApiKey(request: Request, env: Env): Promise<Response> {
+  const authErr = authenticateSecret(request, env);
+  if (authErr) return authErr;
+
+  let body: { key_hash_prefix: string };
+  try {
+    body = await request.json();
+  } catch {
+    return apiError('INVALID_REQUEST', 'Invalid JSON body');
+  }
+
+  if (!body.key_hash_prefix) {
+    return apiError('VALIDATION_ERROR', 'Missing required field: key_hash_prefix');
+  }
+
+  const prefix = body.key_hash_prefix.replace('...', '');
+  const db = createDb(env.DB);
+  const keys = await db.select().from(schema.adminApiKeys).all();
+  const match = keys.find((k) => k.keyHash.startsWith(prefix));
+
+  if (!match) {
+    return apiError('NOT_FOUND', 'API key not found');
+  }
+
+  await db.delete(schema.adminApiKeys).where(eq(schema.adminApiKeys.keyHash, match.keyHash));
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// GET /v1/admin/tokens — list enrollment tokens
+export async function handleListTokens(request: Request, env: Env): Promise<Response> {
+  const authErr = authenticateSecret(request, env);
+  if (authErr) return authErr;
+
+  const db = createDb(env.DB);
+  const tokens = await db.select().from(schema.enrollmentTokens).all();
+
+  return new Response(
+    JSON.stringify({
+      tokens: tokens.map((t) => ({
+        id: t.id,
+        token_prefix: t.token.slice(0, 12) + '...',
+        org_id: t.orgId,
+        used: !!t.used,
+        revoked: !!t.revoked,
+        expires_at: t.expiresAt,
+        created_at: t.createdAt,
+        expired: new Date(t.expiresAt) < new Date(),
+      })),
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
 // GET /v1/admin/status — server health + stats
 export async function handleAdminStatus(request: Request, env: Env): Promise<Response> {
   const authErr = authenticateSecret(request, env);
@@ -115,12 +195,52 @@ export async function handleAdminStatus(request: Request, env: Env): Promise<Res
   const tokens = await db.select().from(schema.enrollmentTokens).all();
   const unusedTokens = tokens.filter((t) => !t.used && !t.revoked && new Date(t.expiresAt) > new Date());
 
+  // Device compliance stats
+  const now = Date.now();
+  const FIFTEEN_MIN = 15 * 60 * 1000;
+  const onlineAgents = activeAgents.filter((a) => a.lastSeenAt && (now - new Date(a.lastSeenAt).getTime()) < FIFTEEN_MIN);
+  const offlineAgents = activeAgents.filter((a) => !a.lastSeenAt || (now - new Date(a.lastSeenAt).getTime()) >= FIFTEEN_MIN);
+
+  // Check compliance per device: a device is compliant if disk_encryption=true AND firewall=true
+  const allChecks = await db.select().from(schema.deviceChecks).all();
+  const checksByDevice = new Map<string, Map<string, string>>();
+  for (const c of allChecks) {
+    if (!checksByDevice.has(c.deviceId)) checksByDevice.set(c.deviceId, new Map());
+    checksByDevice.get(c.deviceId)!.set(c.checkKey, c.checkValue);
+  }
+
+  let compliant = 0;
+  let nonCompliant = 0;
+  for (const agent of activeAgents) {
+    if (!agent.deviceId) continue;
+    const checks = checksByDevice.get(agent.deviceId);
+    if (!checks) { nonCompliant++; continue; }
+
+    const diskEnc = checks.get('disk_encryption.enabled');
+    const firewall = checks.get('firewall.enabled');
+    const screenLockPw = checks.get('screen_lock.password_required');
+
+    const diskOk = diskEnc && JSON.parse(diskEnc).value === true;
+    const fwOk = firewall && JSON.parse(firewall).value === true;
+    const slOk = screenLockPw && JSON.parse(screenLockPw).value === true;
+
+    if (diskOk && fwOk && slOk) {
+      compliant++;
+    } else {
+      nonCompliant++;
+    }
+  }
+
   return new Response(
     JSON.stringify({
       status: 'ok',
       version: '0.2.0',
       stats: {
-        agents_active: activeAgents.length,
+        devices_total: activeAgents.length,
+        devices_compliant: compliant,
+        devices_non_compliant: nonCompliant,
+        devices_online: onlineAgents.length,
+        devices_offline: offlineAgents.length,
         agents_revoked: revokedAgents.length,
         tokens_available: unusedTokens.length,
         tokens_total: tokens.length,

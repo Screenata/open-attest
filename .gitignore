@@ -8,6 +8,9 @@ target/
 .wrangler/
 .dev.vars
 
+# Build output
+dist/
+
 # OS
 .DS_Store
 

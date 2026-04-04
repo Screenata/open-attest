@@ -7,6 +7,9 @@ compatibility_flags = ["nodejs_compat"]
 # For local dev, override in .dev.vars file:
 #   ADMIN_SECRET=dev-secret-change-me
 
+[assets]
+directory = "admin/dist"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "open-attest"

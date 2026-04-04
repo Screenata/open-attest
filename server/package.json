@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
+    "build:admin": "cd admin && npm run build",
+    "dev": "npm run build:admin && wrangler dev",
     "test": "vitest run",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run build:admin && wrangler deploy",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply open-attest --local",
     "db:migrate:production": "wrangler d1 migrations apply open-attest --remote",
-    "deploy:production": "npm run db:migrate:production && wrangler deploy"
+    "deploy:production": "npm run build:admin && npm run db:migrate:production && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.30",

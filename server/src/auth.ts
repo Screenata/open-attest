@@ -1,7 +1,7 @@
 import { verifyEd25519Signature } from './crypto';
 import { apiError } from './errors';
 import { getAgent, getAdminApiKey, type DB } from './db';
-import type { AgentRow } from './types';
+import type { AgentRow, Env } from './types';
 
 export async function authenticateAgent(
   request: Request,
@@ -36,14 +36,22 @@ export async function authenticateAgent(
 export async function authenticateAdmin(
   request: Request,
   db: DB,
+  env?: Env,
 ): Promise<{ org_id: string } | Response> {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return apiError('FORBIDDEN', 'Missing or invalid Authorization header');
   }
 
-  const apiKey = authHeader.slice(7);
-  const keyBytes = new TextEncoder().encode(apiKey);
+  const token = authHeader.slice(7);
+
+  // Accept admin secret as a superuser auth method
+  if (env?.ADMIN_SECRET && token === env.ADMIN_SECRET) {
+    return { org_id: '*' };
+  }
+
+  // Otherwise, check API key
+  const keyBytes = new TextEncoder().encode(token);
   const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes);
   const hashArray = new Uint8Array(hashBuffer);
   let keyHash = '';

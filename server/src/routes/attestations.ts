@@ -68,7 +68,7 @@ export async function handlePostAttestation(request: Request, env: Env): Promise
 export async function handleGetAttestation(request: Request, env: Env, attestationId: string): Promise<Response> {
   const db = createDb(env.DB);
 
-  const authResult = await authenticateAdmin(request, db);
+  const authResult = await authenticateAdmin(request, db, env);
   if (authResult instanceof Response) {
     return authResult;
   }
