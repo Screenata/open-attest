@@ -1,0 +1,20 @@
+# Root wrangler.toml for Cloudflare's one-click deploy button.
+# The actual Worker config is in server/wrangler.toml.
+# This file redirects wrangler to the server directory.
+
+name = "open-attest-server"
+main = "server/src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "server/admin/dist"
+binding = "ASSETS"
+html_handling = "none"
+not_found_handling = "none"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "open-attest"
+database_id = "local"
+migrations_dir = "server/drizzle/migrations"
