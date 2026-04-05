@@ -121,6 +121,22 @@ pub mod parsers {
         authonly_exit_code != 0
     }
 
+    /// Parse hardware info from system_profiler SPHardwareDataType output.
+    /// Returns (model_name, serial_number).
+    pub fn parse_hardware_info(output: &str) -> (String, String) {
+        let mut model = String::new();
+        let mut serial = String::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Model Name:") {
+                model = trimmed.trim_start_matches("Model Name:").trim().to_string();
+            } else if trimmed.starts_with("Serial Number") {
+                serial = trimmed.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+        (model, serial)
+    }
+
     pub fn parse_screen_lock_password(sysadminctl_output: &str, askforpassword_output: &str) -> bool {
         let lower = sysadminctl_output.to_lowercase();
         if lower.contains("screenlock") {
@@ -332,6 +348,39 @@ fn check_local_admin() -> (CheckResult, CheckResult) {
 }
 
 #[cfg(target_os = "macos")]
+fn check_hardware_info() -> Vec<CheckResult> {
+    let output = Command::new("system_profiler")
+        .arg("SPHardwareDataType")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let (model, serial) = parsers::parse_hardware_info(&output);
+    let ts = now_iso();
+
+    vec![
+        CheckResult {
+            key: "device.manufacturer".to_string(),
+            value: CheckValue::Str("Apple".to_string()),
+            observed_at: ts.clone(),
+            source: "system_profiler".to_string(),
+        },
+        CheckResult {
+            key: "device.model".to_string(),
+            value: CheckValue::Str(model),
+            observed_at: ts.clone(),
+            source: "system_profiler".to_string(),
+        },
+        CheckResult {
+            key: "device.serial_number".to_string(),
+            value: CheckValue::Str(serial),
+            observed_at: ts,
+            source: "system_profiler".to_string(),
+        },
+    ]
+}
+
+#[cfg(target_os = "macos")]
 fn check_password_enabled() -> CheckResult {
     let current_user = Command::new("whoami").output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -380,7 +429,7 @@ fn check_password_policy() -> CheckResult {
 #[cfg(target_os = "macos")]
 pub fn collect_all() -> Vec<CheckResult> {
     let (admin_is_admin, admin_members) = check_local_admin();
-    vec![
+    let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
         check_screen_lock_timeout(),
@@ -394,7 +443,9 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_policy(),
         admin_is_admin,
         admin_members,
-    ]
+    ];
+    checks.extend(check_hardware_info());
+    checks
 }
 
 #[cfg(test)]
@@ -444,6 +495,19 @@ mod tests {
     fn password_min_length_global() { assert_eq!(parse_password_min_length("", "minChars=12 maxChars=128"), 12); }
     #[test]
     fn password_min_length_none() { assert_eq!(parse_password_min_length("", ""), 0); }
+    #[test]
+    fn hardware_info_parse() {
+        let output = "      Model Name: MacBook Pro\n      Model Identifier: Mac14,6\n      Serial Number (system): WVQKY3HDCW\n";
+        let (model, serial) = parse_hardware_info(output);
+        assert_eq!(model, "MacBook Pro");
+        assert_eq!(serial, "WVQKY3HDCW");
+    }
+    #[test]
+    fn hardware_info_empty() {
+        let (model, serial) = parse_hardware_info("");
+        assert!(model.is_empty());
+        assert!(serial.is_empty());
+    }
     #[test]
     fn screen_lock_pw_immediate() { assert!(parse_screen_lock_password("screenLock delay is immediate", "")); }
     #[test]
