@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS agents (
   platform TEXT NOT NULL,
   platform_version TEXT,
   device_id TEXT UNIQUE,
+  hardware_uuid TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT

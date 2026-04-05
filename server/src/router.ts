@@ -98,12 +98,17 @@ export async function route(request: Request, env: Env): Promise<Response> {
     return handleGetAttestation(request, env, attestationMatch[1]);
   }
 
-  // SPA fallback — for /admin/* routes that aren't static files,
-  // serve index.html so React Router handles client-side routing
+  // Admin UI — serve static assets or SPA fallback
   if (method === 'GET' && path.startsWith('/admin')) {
     if (path === '/admin') {
       return new Response(null, { status: 302, headers: { Location: '/admin/' } });
     }
+    // Try serving the exact static file first
+    const assetResponse = await env.ASSETS.fetch(new Request(new URL(path, request.url), request));
+    if (assetResponse.status !== 404) {
+      return assetResponse;
+    }
+    // SPA fallback — serve index.html for client-side routing
     return env.ASSETS.fetch(new Request(new URL('/admin/index.html', request.url), request));
   }
 

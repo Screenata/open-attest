@@ -86,6 +86,33 @@ pub mod parsers {
         false
     }
 
+    /// Parse hardware info from Get-CimInstance Win32_ComputerSystem output.
+    /// Returns (manufacturer, model).
+    pub fn parse_hardware_info(output: &str) -> (String, String) {
+        let mut manufacturer = String::new();
+        let mut model = String::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Manufacturer") {
+                manufacturer = trimmed.split(':').nth(1).unwrap_or("").trim().to_string();
+            } else if trimmed.starts_with("Model") {
+                model = trimmed.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+        (manufacturer, model)
+    }
+
+    /// Parse serial number from Get-CimInstance Win32_BIOS output.
+    pub fn parse_serial_number(output: &str) -> String {
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("SerialNumber") {
+                return trimmed.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+        String::new()
+    }
+
     /// Parse whether the current user has a password set.
     /// `net user <username>` output contains "Password Required  Yes/No".
     pub fn parse_password_enabled(output: &str) -> bool {
@@ -410,9 +437,24 @@ fn check_local_admin() -> (CheckResult, CheckResult) {
 }
 
 #[cfg(target_os = "windows")]
+fn check_hardware_info() -> Vec<CheckResult> {
+    let cs_output = ps("Get-CimInstance Win32_ComputerSystem | Format-List Manufacturer,Model");
+    let bios_output = ps("Get-CimInstance Win32_BIOS | Format-List SerialNumber");
+    let (manufacturer, model) = parsers::parse_hardware_info(&cs_output);
+    let serial = parsers::parse_serial_number(&bios_output);
+    let ts = now_iso();
+
+    vec![
+        CheckResult { key: "device.manufacturer".to_string(), value: CheckValue::Str(manufacturer), observed_at: ts.clone(), source: "wmi".to_string() },
+        CheckResult { key: "device.model".to_string(), value: CheckValue::Str(model), observed_at: ts.clone(), source: "wmi".to_string() },
+        CheckResult { key: "device.serial_number".to_string(), value: CheckValue::Str(serial), observed_at: ts, source: "wmi".to_string() },
+    ]
+}
+
+#[cfg(target_os = "windows")]
 pub fn collect_all() -> Vec<CheckResult> {
     let (admin_is_admin, admin_members) = check_local_admin();
-    vec![
+    let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
         check_screen_lock_timeout(),
@@ -426,7 +468,9 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_policy(),
         admin_is_admin,
         admin_members,
-    ]
+    ];
+    checks.extend(check_hardware_info());
+    checks
 }
 
 #[cfg(test)]
@@ -544,5 +588,22 @@ mod tests {
     #[test]
     fn mdm_not_enrolled() {
         assert!(!parse_mdm("AzureAdJoined : YES\nDomainJoined : NO"));
+    }
+
+    // --- Hardware info ---
+    #[test]
+    fn hardware_info_parse() {
+        let output = "Manufacturer : Lenovo\nModel        : ThinkPad X1 Carbon\n";
+        let (mfr, model) = parse_hardware_info(output);
+        assert_eq!(mfr, "Lenovo");
+        assert_eq!(model, "ThinkPad X1 Carbon");
+    }
+    #[test]
+    fn serial_number_parse() {
+        assert_eq!(parse_serial_number("SerialNumber : PF1234AB\n"), "PF1234AB");
+    }
+    #[test]
+    fn serial_number_empty() {
+        assert!(parse_serial_number("").is_empty());
     }
 }

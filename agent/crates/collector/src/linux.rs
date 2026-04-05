@@ -220,6 +220,11 @@ pub mod parsers {
         0
     }
 
+    /// Parse hardware info from DMI/sysfs files.
+    pub fn parse_hardware_info(vendor: &str, product: &str, serial: &str) -> (String, String, String) {
+        (vendor.trim().to_string(), product.trim().to_string(), serial.trim().to_string())
+    }
+
     pub fn parse_admin_members(etc_group: &str) -> Vec<String> {
         for line in etc_group.lines() {
             let trimmed = line.trim();
@@ -553,9 +558,28 @@ fn check_local_admin() -> (CheckResult, CheckResult) {
 }
 
 #[cfg(target_os = "linux")]
+fn check_hardware_info() -> Vec<CheckResult> {
+    let read_dmi = |file: &str| -> String {
+        std::fs::read_to_string(format!("/sys/class/dmi/id/{}", file))
+            .unwrap_or_default()
+    };
+    let (vendor, product, serial) = parsers::parse_hardware_info(
+        &read_dmi("sys_vendor"),
+        &read_dmi("product_name"),
+        &read_dmi("product_serial"),
+    );
+    let ts = now_iso();
+    vec![
+        CheckResult { key: "device.manufacturer".to_string(), value: CheckValue::Str(vendor), observed_at: ts.clone(), source: "dmi".to_string() },
+        CheckResult { key: "device.model".to_string(), value: CheckValue::Str(product), observed_at: ts.clone(), source: "dmi".to_string() },
+        CheckResult { key: "device.serial_number".to_string(), value: CheckValue::Str(serial), observed_at: ts, source: "dmi".to_string() },
+    ]
+}
+
+#[cfg(target_os = "linux")]
 pub fn collect_all() -> Vec<CheckResult> {
     let (admin_is_admin, admin_members) = check_local_admin();
-    vec![
+    let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
         check_screen_lock_timeout(),
@@ -569,7 +593,9 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_policy(),
         admin_is_admin,
         admin_members,
-    ]
+    ];
+    checks.extend(check_hardware_info());
+    checks
 }
 
 #[cfg(test)]
@@ -786,5 +812,21 @@ mod tests {
     #[test]
     fn admin_members_no_sudo_wheel() {
         assert!(parse_admin_members("root:x:0:\ndaemon:x:1:\n").is_empty());
+    }
+
+    // --- Hardware info ---
+    #[test]
+    fn hardware_info_parse() {
+        let (v, p, s) = parse_hardware_info("Lenovo\n", "ThinkPad X1\n", "PF1234AB\n");
+        assert_eq!(v, "Lenovo");
+        assert_eq!(p, "ThinkPad X1");
+        assert_eq!(s, "PF1234AB");
+    }
+    #[test]
+    fn hardware_info_empty() {
+        let (v, p, s) = parse_hardware_info("", "", "");
+        assert!(v.is_empty());
+        assert!(p.is_empty());
+        assert!(s.is_empty());
     }
 }
