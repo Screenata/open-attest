@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth';
 import { useEffect, useState } from 'react';
@@ -45,13 +45,7 @@ function ThemeToggle() {
 
 export default function Layout() {
   const { auth, logout, isAdmin } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
-
-  if (!auth) {
-    navigate('/admin/');
-    return null;
-  }
 
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(path + '/');
@@ -93,7 +87,7 @@ export default function Layout() {
           {/* Right: actions */}
           <div className="flex items-center gap-0.5">
             <span className="mr-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-              {auth.type === 'admin_secret' ? 'Admin' : 'API Key'}
+              {auth?.type === 'admin_secret' ? 'Admin' : 'API Key'}
             </span>
             <a
               href="https://github.com/screenata/open-attest"

@@ -35,6 +35,7 @@ export async function insertAgent(
     platform: string;
     platformVersion: string;
     deviceId: string;
+    hardwareUuid?: string;
   },
 ) {
   await db.insert(schema.agents).values({
@@ -46,6 +47,7 @@ export async function insertAgent(
     platform: agent.platform,
     platformVersion: agent.platformVersion,
     deviceId: agent.deviceId,
+    hardwareUuid: agent.hardwareUuid || null,
   });
 }
 
@@ -53,8 +55,28 @@ export async function getAgent(db: DB, agentId: string) {
   return db.select().from(schema.agents).where(eq(schema.agents.agentId, agentId)).get();
 }
 
+export async function getActiveAgentByHardwareUuid(db: DB, hardwareUuid: string) {
+  return db.select().from(schema.agents)
+    .where(and(eq(schema.agents.hardwareUuid, hardwareUuid), eq(schema.agents.status, 'active')))
+    .get();
+}
+
+export async function getAgentByHardwareUuid(db: DB, hardwareUuid: string) {
+  return db.select().from(schema.agents)
+    .where(eq(schema.agents.hardwareUuid, hardwareUuid))
+    .get();
+}
+
 export async function revokeAgent(db: DB, agentId: string) {
   await db.update(schema.agents).set({ status: 'revoked' }).where(eq(schema.agents.agentId, agentId));
+}
+
+export async function deleteAgent(db: DB, agentId: string, deviceId: string | null) {
+  if (deviceId) {
+    await db.delete(schema.deviceChecks).where(eq(schema.deviceChecks.deviceId, deviceId));
+    await db.delete(schema.attestations).where(eq(schema.attestations.deviceId, deviceId));
+  }
+  await db.delete(schema.agents).where(eq(schema.agents.agentId, agentId));
 }
 
 export async function updateLastSeen(db: DB, agentId: string, timestamp: string) {

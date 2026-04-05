@@ -22,6 +22,7 @@ export const agents = sqliteTable('agents', {
   platform: text('platform').notNull(),
   platformVersion: text('platform_version'),
   deviceId: text('device_id').unique(),
+  hardwareUuid: text('hardware_uuid'),
   status: text('status').notNull().default('active'),
   enrolledAt: text('enrolled_at').notNull().default(sql`(datetime('now'))`),
   lastSeenAt: text('last_seen_at'),
