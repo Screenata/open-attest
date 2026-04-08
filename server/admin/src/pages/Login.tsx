@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/card';
 import { useAuth } from '@/lib/auth';
 import { api, ApiError } from '@/lib/api';
-import { ShieldCheck, KeyRound, AlertCircle, Loader2 } from 'lucide-react';
+import { KeyRound, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function Login() {
   const [secret, setSecret] = useState('');
@@ -71,8 +71,17 @@ export default function Login() {
       <div className="w-full max-w-sm">
       <Card className="shadow-lg">
         <CardHeader className="text-center pb-2">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-            <ShieldCheck className="h-8 w-8 text-primary" />
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center">
+            <svg viewBox="0 0 64 64" fill="none" className="h-12 w-12">
+              <rect x="8" y="4" width="48" height="4" rx="2" fill="currentColor"/>
+              <rect x="8" y="12" width="48" height="4" rx="2" fill="currentColor"/>
+              <rect x="10" y="20" width="44" height="4" rx="2" fill="currentColor"/>
+              <rect x="12" y="28" width="40" height="4" rx="2" fill="currentColor"/>
+              <rect x="14" y="36" width="36" height="4" rx="2" fill="currentColor"/>
+              <rect x="17" y="44" width="30" height="4" rx="2" fill="currentColor"/>
+              <rect x="21" y="52" width="22" height="4" rx="2" fill="currentColor"/>
+              <rect x="27" y="60" width="10" height="3" rx="1.5" fill="currentColor"/>
+            </svg>
           </div>
           <CardTitle className="text-2xl font-bold">open-attest</CardTitle>
           <CardDescription className="text-sm">
