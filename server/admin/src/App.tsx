@@ -29,14 +29,14 @@ export default function App() {
     <AuthContext.Provider value={{ auth, setAuth, logout, isAdmin }}>
       <BrowserRouter>
         <Routes>
-          <Route path="/admin" element={auth ? <Navigate to="/admin/dashboard" replace /> : <Login />} />
-          <Route path="/admin/" element={auth ? <Navigate to="/admin/dashboard" replace /> : <Login />} />
+          <Route path="/admin" element={auth ? <Navigate to={isAdmin ? "/admin/dashboard" : "/admin/devices"} replace /> : <Login />} />
+          <Route path="/admin/" element={auth ? <Navigate to={isAdmin ? "/admin/dashboard" : "/admin/devices"} replace /> : <Login />} />
           <Route element={auth ? <Layout /> : <Navigate to="/admin/" replace />}>
-            <Route path="/admin/dashboard" element={<Dashboard />} />
+            <Route path="/admin/dashboard" element={isAdmin ? <Dashboard /> : <Navigate to="/admin/devices" replace />} />
             <Route path="/admin/devices" element={<Devices />} />
             <Route path="/admin/devices/:deviceId" element={<DeviceDetail />} />
-            <Route path="/admin/credentials" element={<ApiKeys />} />
-            <Route path="/admin/*" element={<Navigate to="/admin/dashboard" replace />} />
+            <Route path="/admin/credentials" element={isAdmin ? <ApiKeys /> : <Navigate to="/admin/devices" replace />} />
+            <Route path="/admin/*" element={<Navigate to={isAdmin ? "/admin/dashboard" : "/admin/devices"} replace />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin/" replace />} />
         </Routes>
