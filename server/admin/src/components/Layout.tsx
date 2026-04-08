@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth';
 import { useEffect, useState } from 'react';
 import {
-  ShieldCheck,
   LayoutDashboard,
   Monitor,
   Key,
@@ -60,7 +59,16 @@ export default function Layout() {
               to="/admin/dashboard"
               className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-semibold tracking-tight transition-colors hover:bg-accent"
             >
-              <ShieldCheck className="h-4 w-4 text-primary" />
+              <svg viewBox="0 0 64 64" fill="currentColor" className="h-4 w-4">
+                <rect x="8" y="4" width="48" height="4" rx="2"/>
+                <rect x="8" y="12" width="48" height="4" rx="2"/>
+                <rect x="10" y="20" width="44" height="4" rx="2"/>
+                <rect x="12" y="28" width="40" height="4" rx="2"/>
+                <rect x="14" y="36" width="36" height="4" rx="2"/>
+                <rect x="17" y="44" width="30" height="4" rx="2"/>
+                <rect x="21" y="52" width="22" height="4" rx="2"/>
+                <rect x="27" y="60" width="10" height="3" rx="1.5"/>
+              </svg>
               Open Attest
             </Link>
 
