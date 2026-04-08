@@ -402,7 +402,7 @@ fn check_password_policy() -> CheckResult {
 }
 
 #[cfg(target_os = "windows")]
-fn check_local_admin() -> (CheckResult, CheckResult) {
+fn check_local_admin() -> CheckResult {
     let output = Command::new("net")
         .args(["localgroup", "Administrators"])
         .output()
@@ -413,27 +413,16 @@ fn check_local_admin() -> (CheckResult, CheckResult) {
     let current_user = Command::new("whoami").output()
         .map(|o| {
             let full = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            // whoami on Windows returns DOMAIN\user, extract just user
             full.split('\\').last().unwrap_or(&full).to_string()
         })
         .unwrap_or_default();
 
-    let is_admin = members.iter().any(|m| m.eq_ignore_ascii_case(&current_user));
-
-    (
-        CheckResult {
-            key: "local_admin.is_admin".to_string(),
-            value: CheckValue::Bool(is_admin),
-            observed_at: now_iso(),
-            source: "net_localgroup".to_string(),
-        },
-        CheckResult {
-            key: "local_admin.members".to_string(),
-            value: CheckValue::StringList(members),
-            observed_at: now_iso(),
-            source: "net_localgroup".to_string(),
-        },
-    )
+    CheckResult {
+        key: "local_admin.is_admin".to_string(),
+        value: CheckValue::Bool(members.iter().any(|m| m.eq_ignore_ascii_case(&current_user))),
+        observed_at: now_iso(),
+        source: "net_localgroup".to_string(),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -453,7 +442,6 @@ fn check_hardware_info() -> Vec<CheckResult> {
 
 #[cfg(target_os = "windows")]
 pub fn collect_all() -> Vec<CheckResult> {
-    let (admin_is_admin, admin_members) = check_local_admin();
     let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
@@ -466,8 +454,7 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_edr_presence(),
         check_password_enabled(),
         check_password_policy(),
-        admin_is_admin,
-        admin_members,
+        check_local_admin(),
     ];
     checks.extend(check_hardware_info());
     checks

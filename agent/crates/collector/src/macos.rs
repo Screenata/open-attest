@@ -318,7 +318,7 @@ fn check_edr_presence() -> CheckResult {
 }
 
 #[cfg(target_os = "macos")]
-fn check_local_admin() -> (CheckResult, CheckResult) {
+fn check_local_admin() -> CheckResult {
     let output = Command::new("dscl")
         .args([".", "-read", "/Groups/admin", "GroupMembership"])
         .output()
@@ -329,22 +329,13 @@ fn check_local_admin() -> (CheckResult, CheckResult) {
     let current_user = Command::new("whoami").output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    let is_admin = members.contains(&current_user);
 
-    (
-        CheckResult {
-            key: "local_admin.is_admin".to_string(),
-            value: CheckValue::Bool(is_admin),
-            observed_at: now_iso(),
-            source: "dscl".to_string(),
-        },
-        CheckResult {
-            key: "local_admin.members".to_string(),
-            value: CheckValue::StringList(members),
-            observed_at: now_iso(),
-            source: "dscl".to_string(),
-        },
-    )
+    CheckResult {
+        key: "local_admin.is_admin".to_string(),
+        value: CheckValue::Bool(members.contains(&current_user)),
+        observed_at: now_iso(),
+        source: "dscl".to_string(),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -428,7 +419,6 @@ fn check_password_policy() -> CheckResult {
 
 #[cfg(target_os = "macos")]
 pub fn collect_all() -> Vec<CheckResult> {
-    let (admin_is_admin, admin_members) = check_local_admin();
     let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
@@ -441,8 +431,7 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_edr_presence(),
         check_password_enabled(),
         check_password_policy(),
-        admin_is_admin,
-        admin_members,
+        check_local_admin(),
     ];
     checks.extend(check_hardware_info());
     checks
