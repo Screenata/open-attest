@@ -11,6 +11,9 @@ target/
 # Build output
 dist/
 
+# Root lockfile (not needed, server has its own)
+/pnpm-lock.yaml
+
 # OS
 .DS_Store
 
