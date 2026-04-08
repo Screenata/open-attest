@@ -1,5 +1,7 @@
 # open-attest
 
+![Open Attest](social-preview.png)
+
 Lightweight, open-source endpoint attestation for SOC 2. Collects signed endpoint posture facts and exposes them through an open API — no MDM, no infrastructure, no complexity.
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/screenata/open-attest/tree/main/server)
@@ -36,11 +38,7 @@ Every attestation is signed with Ed25519 so the server can verify it came from a
 
 ## Architecture
 
-```
-Agent (Rust)  -->  Reference Server (Cloudflare Workers + D1)  -->  Screenata / your GRC
-                         |
-                    Admin UI (React)
-```
+![OpenAttest System Architecture](architecture-diagram.png)
 
 - **Agent**: Rust binary (macOS, Windows, Linux), runs as a background daemon, collects posture checks, signs and submits attestations
 - **Server**: TypeScript on Cloudflare Workers with D1 (SQLite) and Drizzle ORM. Zero infrastructure to manage. Free tier covers ~50 devices
