@@ -68,7 +68,8 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-sm shadow-lg">
+      <div className="w-full max-w-sm">
+      <Card className="shadow-lg">
         <CardHeader className="text-center pb-2">
           <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
             <ShieldCheck className="h-8 w-8 text-primary" />
@@ -138,6 +139,7 @@ export default function Login() {
         >
           Sponsored by Screenata
         </a>
+      </div>
       </div>
     </div>
   );
