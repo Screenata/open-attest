@@ -107,7 +107,6 @@ open-attest uninstall       # remove agent and daemon
 | MDM enrollment | `mdm.enrolled` | bool | profiles | dsregcmd | N/A |
 | EDR/AV presence | `edr.present` | bool | XProtect + process scan | SecurityCenter2 + Defender | Process scan + AppArmor/SELinux |
 | Local admin | `local_admin.is_admin` | bool | dscl | net localgroup | /etc/group (sudo/wheel) |
-| Admin members | `local_admin.members` | string[] | dscl | net localgroup | /etc/group (sudo/wheel) |
 
 ## Compliance evaluation
 

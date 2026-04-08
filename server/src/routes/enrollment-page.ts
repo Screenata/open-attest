@@ -120,7 +120,7 @@ export async function handleEnrollmentPage(request: Request, env: Env, tokenValu
     </div>
 
     <div class="info">
-      The agent collects security posture data (disk encryption, firewall, screen lock, etc.) and reports it to your organization. It does not modify your system or install additional software.
+      The agent collects: disk encryption status, firewall status, screen lock settings, OS version, antivirus presence, password policy, admin status, hostname, OS username, and device model/serial. It does not collect files, browsing history, or application data. It does not modify your system.
     </div>
     ` : `
     <h1>${status === 'expired' ? 'Link Expired' : status === 'used' ? 'Link Already Used' : status === 'revoked' ? 'Link Revoked' : 'Link Not Found'}</h1>
