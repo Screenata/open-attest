@@ -148,6 +148,23 @@ All endpoints require authentication. Agent endpoints use Ed25519 signatures. Ad
 | GET | `/v1/devices/:id` | API key | Device + posture checks |
 | GET | `/v1/attestations/:id` | API key | Attestation detail |
 
+## Securing the admin UI (recommended)
+
+Protect the admin UI with Cloudflare Access for SSO + MFA — no code changes needed.
+
+1. Go to Cloudflare dashboard → Zero Trust → Access → Applications
+2. Click **Add an application** → Self-hosted
+3. Set the domain to your Worker (e.g., `open-attest-server.your-subdomain.workers.dev`)
+4. Set the path to `/admin/*`
+5. Add a policy: allow emails ending in `@your-company.com`
+6. Save
+
+Now anyone accessing `/admin/` must authenticate through your identity provider (Google, GitHub, Okta, Azure AD, etc.) before reaching the admin UI. MFA is handled by the identity provider.
+
+API endpoints (`/v1/*`) remain unprotected so agents can submit attestations without login.
+
+Free for up to 50 users on the Cloudflare Zero Trust free plan.
+
 ## Building a .pkg installer (macOS)
 
 For distributing to non-technical users:
