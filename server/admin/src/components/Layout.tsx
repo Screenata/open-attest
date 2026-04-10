@@ -59,10 +59,7 @@ export default function Layout() {
               to="/admin/dashboard"
               className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-semibold tracking-tight transition-colors hover:bg-accent"
             >
-              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" className="h-4 w-4">
-                <circle cx="32" cy="32" r="28" strokeWidth="4"/>
-                <polyline points="20,33 28,41 44,23" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <img src="/admin/logo.svg" alt="Open Attest" className="h-4 w-4" />
               Open Attest
             </Link>
 
