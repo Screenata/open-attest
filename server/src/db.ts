@@ -48,6 +48,7 @@ export async function insertAgent(
     platformVersion: agent.platformVersion,
     deviceId: agent.deviceId,
     hardwareUuid: agent.hardwareUuid || null,
+    lastSeenAt: new Date().toISOString(),
   });
 }
 
