@@ -1,6 +1,9 @@
 mod cli;
+#[cfg(target_os = "macos")]
 mod launchd;
 mod retry;
+#[cfg(target_os = "windows")]
+mod winsvc;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -26,6 +29,7 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn get_os_version() -> String {
     Command::new("sw_vers")
         .arg("-productVersion")
@@ -34,6 +38,26 @@ fn get_os_version() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn get_os_version() -> String {
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+               "[System.Environment]::OSVersion.Version.ToString()"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn get_os_version() -> String {
+    Command::new("uname")
+        .arg("-r")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[cfg(target_os = "macos")]
 fn get_hardware_uuid() -> Option<String> {
     Command::new("ioreg")
         .args(["-rd1", "-c", "IOPlatformExpertDevice"])
@@ -50,6 +74,31 @@ fn get_hardware_uuid() -> Option<String> {
             }
             None
         })
+}
+
+#[cfg(target_os = "windows")]
+fn get_hardware_uuid() -> Option<String> {
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+               "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            let uuid = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if uuid.is_empty() || uuid == "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF" {
+                None
+            } else {
+                Some(uuid)
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn get_hardware_uuid() -> Option<String> {
+    std::fs::read_to_string("/sys/class/dmi/id/product_uuid")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn get_device_id() -> String {
@@ -80,7 +129,7 @@ fn do_enroll(token: String, server: String) -> Result<()> {
         token: token.clone(),
         public_key: public_key.clone(),
         hostname: hostname.clone(),
-        platform: "macos".to_string(),
+        platform: std::env::consts::OS.to_string(),
         platform_version: os_version.clone(),
         identity_anchors: IdentityAnchors {
             hardware_uuid,
@@ -104,9 +153,14 @@ fn do_enroll(token: String, server: String) -> Result<()> {
 
     config::save(&agent_config).context("Failed to save config")?;
 
-    // Install LaunchAgent
+    // Install platform-specific daemon
+    #[cfg(target_os = "macos")]
     if let Err(e) = launchd::install_launchd() {
         eprintln!("Warning: Failed to install LaunchAgent: {}", e);
+    }
+    #[cfg(target_os = "windows")]
+    if let Err(e) = winsvc::install_task() {
+        eprintln!("Warning: Failed to install Scheduled Task: {}", e);
     }
 
     println!("Enrolled successfully!");
@@ -227,7 +281,7 @@ fn build_attestation_payload(cfg: &config::AgentConfig) -> AttestationPayload {
         device: DeviceInfo {
             device_id: cfg.device_id.clone(),
             hostname,
-            platform: "macos".to_string(),
+            platform: std::env::consts::OS.to_string(),
             platform_version: os_version,
             identity_anchors: IdentityAnchors {
                 hardware_uuid: get_hardware_uuid(),
@@ -276,9 +330,14 @@ fn do_attest() -> Result<()> {
 }
 
 fn do_uninstall() -> Result<()> {
-    // Unload LaunchAgent
+    // Remove platform-specific daemon
+    #[cfg(target_os = "macos")]
     if let Err(e) = launchd::uninstall_launchd() {
         eprintln!("Warning: Failed to uninstall LaunchAgent: {}", e);
+    }
+    #[cfg(target_os = "windows")]
+    if let Err(e) = winsvc::uninstall_task() {
+        eprintln!("Warning: Failed to remove Scheduled Task: {}", e);
     }
 
     // Delete config directory
