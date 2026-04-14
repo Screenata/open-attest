@@ -3,6 +3,15 @@ use open_attest_types::{
     AttestationPayload, EnrollmentRequest, EnrollmentResponse, ErrorResponse, HeartbeatPayload,
     ServerResponse,
 };
+use std::time::Duration;
+
+fn build_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("Failed to build HTTP client")
+}
 
 /// Enroll the agent with the server.
 pub fn enroll(
@@ -11,7 +20,7 @@ pub fn enroll(
     _public_key_base64: &str,
 ) -> Result<EnrollmentResponse> {
     let url = format!("{}/v1/agents/enroll", server_url.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::new();
+    let client = build_client();
 
     let resp = client
         .post(&url)
@@ -49,7 +58,7 @@ pub fn submit_attestation(
     let body = serde_json::to_string(payload).context("Failed to serialize attestation")?;
     let signature = sign_fn(body.as_bytes());
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_client();
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -89,7 +98,7 @@ pub fn send_heartbeat(
     let body = serde_json::to_string(payload).context("Failed to serialize heartbeat")?;
     let signature = sign_fn(body.as_bytes());
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_client();
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")

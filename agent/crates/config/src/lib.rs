@@ -15,14 +15,13 @@ pub struct AgentConfig {
     pub key_path: String,
 }
 
-/// Returns the config directory: ~/Library/Application Support/open-attest/
+/// Returns the platform-appropriate config directory:
+///   macOS:   ~/Library/Application Support/open-attest/
+///   Windows: %APPDATA%/open-attest/
+///   Linux:   ~/.config/open-attest/
 pub fn config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    let dir = home
-        .join("Library")
-        .join("Application Support")
-        .join("open-attest");
-    Ok(dir)
+    let base = dirs::config_dir().context("Could not determine config directory")?;
+    Ok(base.join("open-attest"))
 }
 
 /// Returns the config file path.
