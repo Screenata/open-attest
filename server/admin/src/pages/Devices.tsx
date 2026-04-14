@@ -34,9 +34,11 @@ interface Device {
   last_seen_at: string;
 }
 
-function relativeTime(dateStr: string): { text: string; stale: 'ok' | 'warn' | 'error' } {
+function relativeTime(dateStr: string | null | undefined): { text: string; stale: 'ok' | 'warn' | 'error' } {
+  if (!dateStr) return { text: 'never', stale: 'error' };
   const now = Date.now();
   const then = new Date(dateStr).getTime();
+  if (isNaN(then)) return { text: 'never', stale: 'error' };
   const diffMs = now - then;
   const diffMin = Math.floor(diffMs / 60000);
   const diffHr = Math.floor(diffMs / 3600000);
