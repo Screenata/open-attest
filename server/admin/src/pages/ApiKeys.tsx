@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import CreateApiKeyDialog from '@/components/CreateApiKeyDialog';
+import CreateTokenDialog from '@/components/CreateTokenDialog';
 import {
   Key,
   KeyRound,
@@ -47,6 +48,7 @@ export default function ApiKeys() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'keys' | 'tokens'>('keys');
   const [createKeyOpen, setCreateKeyOpen] = useState(false);
+  const [createTokenOpen, setCreateTokenOpen] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
   const isAdmin = auth?.type === 'admin_secret';
@@ -180,9 +182,14 @@ export default function ApiKeys() {
         </div>
       ) : tab === 'keys' ? (
         <Card className="shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">API Keys</CardTitle>
-            <Button size="sm" onClick={() => setCreateKeyOpen(true)} className="gap-1.5">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <CardTitle className="text-lg">API Keys</CardTitle>
+              <CardDescription>
+                Bearer tokens for the admin UI and the read-only HTTP API. Use one to sign in here, or to script device and attestation lookups from CI, dashboards, or other internal tools. Keys are stored hashed — the full value is shown once at creation, so copy it before closing the dialog.
+              </CardDescription>
+            </div>
+            <Button size="sm" onClick={() => setCreateKeyOpen(true)} className="gap-1.5 shrink-0">
               <Plus className="h-4 w-4" />
               Create API Key
             </Button>
@@ -250,8 +257,24 @@ export default function ApiKeys() {
         </Card>
       ) : (
         <Card className="shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Enrollment Tokens</CardTitle>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <CardTitle className="text-lg">Enrollment Tokens</CardTitle>
+              <CardDescription>
+                One-time-shareable links that let an end-user device install the agent and join an org. Each token has an expiry and a max-uses limit (1 = single device, higher for batch rollouts). The full link is shown once at creation — share it then. If lost, just create a new token.
+              </CardDescription>
+            </div>
+            <Button size="sm" onClick={() => setCreateTokenOpen(true)} className="gap-1.5 shrink-0">
+              <Plus className="h-4 w-4" />
+              New Enrollment Token
+            </Button>
+            <CreateTokenDialog
+              open={createTokenOpen}
+              onOpenChange={(open) => {
+                setCreateTokenOpen(open);
+                if (!open) loadData();
+              }}
+            />
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
@@ -273,7 +296,7 @@ export default function ApiKeys() {
                       <div className="flex flex-col items-center gap-2 text-muted-foreground">
                         <Ticket className="h-6 w-6" />
                         <p className="text-sm font-medium">No enrollment tokens yet</p>
-                        <p className="text-xs">Create an enrollment token from the Dashboard to enroll new devices.</p>
+                        <p className="text-xs">Click "New Enrollment Token" to create one and enroll new devices.</p>
                       </div>
                     </TableCell>
                   </TableRow>

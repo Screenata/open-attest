@@ -21,7 +21,10 @@ export function evaluateCompliance(key: string, val: CheckValueWire): Status {
     case 'mdm.enrolled':
       return val.type === 'bool' && val.value ? 'pass' : 'info';
     case 'screen_lock.timeout_minutes':
-      return val.type === 'int' && val.value > 0 && val.value <= 15 ? 'pass' : 'fail';
+      if (val.type !== 'int') return 'fail';
+      if (val.value === -1) return 'warn';
+      if (val.value === 0) return 'fail';
+      return val.value > 0 && val.value <= 15 ? 'pass' : 'fail';
     case 'password_policy.min_length':
       return val.type === 'int' && val.value >= 8 ? 'pass' : 'fail';
     case 'local_admin.is_admin':

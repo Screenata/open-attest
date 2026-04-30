@@ -96,7 +96,7 @@ export default function CreateTokenDialog({
             Create Enrollment Token
           </DialogTitle>
           <DialogDescription>
-            Generate a link to enroll devices. Share it with your team.
+            Generate a link to enroll devices. Copy and share it now — the full link is shown only at creation. If lost, create a new token.
           </DialogDescription>
         </DialogHeader>
         {result ? (
@@ -118,7 +118,7 @@ export default function CreateTokenDialog({
                 </Button>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
-                Send this link to employees. They'll see download and install instructions.
+                Send this link to employees now — it won't be shown again after you close this dialog. They'll see download and install instructions.
               </p>
             </div>
 

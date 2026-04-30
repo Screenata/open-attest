@@ -93,7 +93,7 @@ export default function DeviceDetail() {
 
     setRevoking(true);
     try {
-      await api('/v1/admin/revoke', {
+      await api('/v1/agents/revoke', {
         method: 'POST',
         body: { agent_id: device.agent_id },
         auth: auth.value,

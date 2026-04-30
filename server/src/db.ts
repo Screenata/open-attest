@@ -84,6 +84,23 @@ export async function updateLastSeen(db: DB, agentId: string, timestamp: string)
   await db.update(schema.agents).set({ lastSeenAt: timestamp }).where(eq(schema.agents.agentId, agentId));
 }
 
+export async function updateAgentHostname(db: DB, agentId: string, hostname: string) {
+  await db.update(schema.agents).set({ hostname }).where(eq(schema.agents.agentId, agentId));
+}
+
+export async function updateAgentDeviceInfo(
+  db: DB,
+  agentId: string,
+  fields: { hostname?: string; platformVersion?: string; platform?: string },
+) {
+  const set: Record<string, string> = {};
+  if (fields.hostname !== undefined) set.hostname = fields.hostname;
+  if (fields.platformVersion !== undefined) set.platformVersion = fields.platformVersion;
+  if (fields.platform !== undefined) set.platform = fields.platform;
+  if (Object.keys(set).length === 0) return;
+  await db.update(schema.agents).set(set).where(eq(schema.agents.agentId, agentId));
+}
+
 // --- Attestations ---
 
 export async function insertAttestation(

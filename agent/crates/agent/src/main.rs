@@ -16,7 +16,7 @@ use open_attest_types::*;
 use std::process::Command;
 
 const AGENT_NAME: &str = "open-attest";
-const AGENT_VERSION: &str = "0.1.0";
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)

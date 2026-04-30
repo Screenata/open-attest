@@ -21,11 +21,75 @@ pub mod parsers {
         matches!(trimmed, "1" | "2")
     }
 
-    pub fn parse_screen_lock_timeout(output: &str) -> i64 {
+    /// Sentinel meaning "no lock will ever trigger" (display never sleeps and screensaver never kicks in).
+    pub const SCREEN_LOCK_NEVER: i64 = 0;
+    /// Sentinel meaning "couldn't determine" — distinct from "never" so the UI can distinguish.
+    pub const SCREEN_LOCK_UNKNOWN: i64 = -1;
+
+    /// Parse `pmset -g custom` (or any pmset output) for the AC `displaysleep` value, in minutes.
+    /// Returns None if not found. `0` from pmset means "never" — preserved as Some(0).
+    pub fn parse_pmset_displaysleep(output: &str) -> Option<i64> {
+        // pmset prints lines like " displaysleep         5"
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("displaysleep") {
+                let num: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = num.parse::<i64>() {
+                    return Some(n);
+                }
+            }
+        }
+        None
+    }
+
+    /// Parse `defaults -currentHost read com.apple.screensaver idleTime` output, in seconds.
+    /// Returns None if the key is missing or unparseable. `0` means "never" — preserved as Some(0).
+    pub fn parse_screensaver_idle(output: &str) -> Option<i64> {
         let trimmed = output.trim();
-        match trimmed.parse::<i64>() {
-            Ok(seconds) => seconds / 60,
-            Err(_) => -1,
+        if trimmed.is_empty() {
+            return None;
+        }
+        trimmed.parse::<i64>().ok()
+    }
+
+    /// Compute the effective screen-lock timeout in minutes from the two macOS sources.
+    /// `displaysleep_min`: minutes from `pmset` (None = couldn't read, Some(0) = never).
+    /// `screensaver_idle_sec`: seconds from `com.apple.screensaver idleTime`
+    /// (None = key missing, Some(0) = never).
+    ///
+    /// Returns:
+    ///   SCREEN_LOCK_UNKNOWN (-1) if neither source could be read.
+    ///   SCREEN_LOCK_NEVER (0)    if both sources are explicitly "never".
+    ///   otherwise the smaller of the two timeouts, in minutes (rounded down, min 1).
+    pub fn compute_effective_lock_minutes(
+        displaysleep_min: Option<i64>,
+        screensaver_idle_sec: Option<i64>,
+    ) -> i64 {
+        // Convert each source to Option<minutes> where None = "never or unset",
+        // Some(n) = "locks after n minutes".
+        let ds_min: Option<i64> = match displaysleep_min {
+            Some(0) | None => None,
+            Some(n) if n > 0 => Some(n),
+            _ => None,
+        };
+        let ss_min: Option<i64> = match screensaver_idle_sec {
+            Some(0) | None => None,
+            Some(s) if s > 0 => Some((s / 60).max(1)),
+            _ => None,
+        };
+
+        match (ds_min, ss_min) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => {
+                // Both "never or unset". Distinguish "explicitly never" from "couldn't read".
+                if displaysleep_min.is_none() && screensaver_idle_sec.is_none() {
+                    SCREEN_LOCK_UNKNOWN
+                } else {
+                    SCREEN_LOCK_NEVER
+                }
+            }
         }
     }
 
@@ -190,19 +254,37 @@ fn check_firewall() -> CheckResult {
 
 #[cfg(target_os = "macos")]
 fn check_screen_lock_timeout() -> CheckResult {
-    let (output, source) = match Command::new("defaults")
+    // Source 1: screensaver idleTime (seconds). Missing key → defaults exits non-zero.
+    let screensaver_raw = Command::new("defaults")
         .args(["-currentHost", "read", "com.apple.screensaver", "idleTime"])
+        .stderr(std::process::Stdio::null())
         .output()
-    {
-        Ok(out) if out.status.success() => (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            "defaults_read",
-        ),
-        _ => (String::new(), "unavailable"),
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).to_string()) } else { None })
+        .unwrap_or_default();
+    let screensaver_idle_sec = parsers::parse_screensaver_idle(&screensaver_raw);
+
+    // Source 2: pmset displaysleep (minutes). Use AC settings as the lock-relevant baseline.
+    let pmset_raw = Command::new("pmset")
+        .args(["-g", "custom"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    let displaysleep_min = parsers::parse_pmset_displaysleep(&pmset_raw);
+
+    let effective = parsers::compute_effective_lock_minutes(displaysleep_min, screensaver_idle_sec);
+
+    let source = match (displaysleep_min, screensaver_idle_sec) {
+        (Some(_), Some(_)) => "pmset+screensaver",
+        (Some(_), None) => "pmset",
+        (None, Some(_)) => "screensaver",
+        (None, None) => "unavailable",
     };
+
     CheckResult {
         key: "screen_lock.timeout_minutes".to_string(),
-        value: CheckValue::Int(parsers::parse_screen_lock_timeout(&output)),
+        value: CheckValue::Int(effective),
         observed_at: now_iso(),
         source: source.to_string(),
     }
@@ -450,9 +532,61 @@ mod tests {
     #[test]
     fn parse_firewall_disabled() { assert!(!parse_firewall("0\n")); }
     #[test]
-    fn parse_screen_lock_300s() { assert_eq!(parse_screen_lock_timeout("300\n"), 5); }
+    fn screensaver_idle_present() { assert_eq!(parse_screensaver_idle("300\n"), Some(300)); }
     #[test]
-    fn parse_screen_lock_invalid() { assert_eq!(parse_screen_lock_timeout("not a number"), -1); }
+    fn screensaver_idle_missing() { assert_eq!(parse_screensaver_idle(""), None); }
+    #[test]
+    fn screensaver_idle_never() { assert_eq!(parse_screensaver_idle("0\n"), Some(0)); }
+    #[test]
+    fn pmset_displaysleep_present() {
+        let out = "Battery Power:\n displaysleep         2\n sleep                10\nAC Power:\n displaysleep         5\n sleep                0\n";
+        // First match wins; both AC and battery have it. Either is acceptable as the policy baseline.
+        assert!(matches!(parse_pmset_displaysleep(out), Some(2) | Some(5)));
+    }
+    #[test]
+    fn pmset_displaysleep_missing() { assert_eq!(parse_pmset_displaysleep(""), None); }
+    #[test]
+    fn pmset_displaysleep_never() {
+        let out = "AC Power:\n displaysleep         0\n";
+        assert_eq!(parse_pmset_displaysleep(out), Some(0));
+    }
+    #[test]
+    fn effective_lock_both_sources() {
+        // pmset 5min, screensaver 300s = 5min → min is 5.
+        assert_eq!(compute_effective_lock_minutes(Some(5), Some(300)), 5);
+        // pmset 10min, screensaver 60s = 1min → min is 1.
+        assert_eq!(compute_effective_lock_minutes(Some(10), Some(60)), 1);
+    }
+    #[test]
+    fn effective_lock_screensaver_missing_uses_pmset() {
+        // The bug case: idleTime key absent on a fresh macOS; pmset reports 5min.
+        // Old behavior returned -1 (FAIL). New behavior: 5 (PASS).
+        assert_eq!(compute_effective_lock_minutes(Some(5), None), 5);
+    }
+    #[test]
+    fn effective_lock_pmset_missing_uses_screensaver() {
+        assert_eq!(compute_effective_lock_minutes(None, Some(600)), 10);
+    }
+    #[test]
+    fn effective_lock_both_never() {
+        // pmset displaysleep=0 (never) AND screensaver idleTime=0 (never).
+        assert_eq!(compute_effective_lock_minutes(Some(0), Some(0)), SCREEN_LOCK_NEVER);
+    }
+    #[test]
+    fn effective_lock_unknown() {
+        // Both sources unreadable.
+        assert_eq!(compute_effective_lock_minutes(None, None), SCREEN_LOCK_UNKNOWN);
+    }
+    #[test]
+    fn effective_lock_pmset_never_screensaver_set() {
+        // Display never sleeps, but screensaver kicks in at 600s = 10min.
+        assert_eq!(compute_effective_lock_minutes(Some(0), Some(600)), 10);
+    }
+    #[test]
+    fn effective_lock_sub_minute_rounds_to_one() {
+        // 30s screensaver should not round to 0 (which would mean "never").
+        assert_eq!(compute_effective_lock_minutes(None, Some(30)), 1);
+    }
     #[test]
     fn parse_os_version_trim() { assert_eq!(parse_os_version("14.4.1\n"), "14.4.1"); }
     #[test]
