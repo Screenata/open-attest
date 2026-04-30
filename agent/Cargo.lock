@@ -939,7 +939,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "open-attest"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "open-attest-collector"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "open-attest-config"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "open-attest-signer"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "open-attest-transport"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "open-attest-types"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",

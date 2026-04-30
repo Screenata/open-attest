@@ -242,7 +242,7 @@ export async function handleAdminStatus(request: Request, env: Env): Promise<Res
   return new Response(
     JSON.stringify({
       status: 'ok',
-      version: '0.3.1',
+      version: '0.4.0',
       stats: {
         devices_total: activeAgents.length,
         devices_compliant: compliant,
