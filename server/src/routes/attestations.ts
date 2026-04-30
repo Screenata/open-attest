@@ -1,6 +1,6 @@
 import { authenticateAgent, authenticateAdmin } from '../auth';
 import { apiError } from '../errors';
-import { createDb, insertAttestation, upsertDeviceCheck, getAttestation, updateLastSeen } from '../db';
+import { createDb, insertAttestation, upsertDeviceCheck, getAttestation, updateLastSeen, updateAgentDeviceInfo } from '../db';
 import { AttestationPayload, Env } from '../types';
 
 export async function handlePostAttestation(request: Request, env: Env): Promise<Response> {
@@ -39,6 +39,26 @@ export async function handlePostAttestation(request: Request, env: Env): Promise
   });
 
   await updateLastSeen(db, agent.agentId, payload.collected_at);
+
+  // Refresh mutable device metadata reported by the agent. Skip blank/whitespace
+  // values so a misbehaving collector can't blank out a column. Only write fields
+  // that actually changed to keep the update a no-op when nothing drifted.
+  const reportedHostname = payload.device?.hostname?.trim();
+  const reportedPlatform = payload.device?.platform?.trim();
+  const reportedPlatformVersion = payload.device?.platform_version?.trim();
+  const drift: { hostname?: string; platform?: string; platformVersion?: string } = {};
+  if (reportedHostname && reportedHostname !== agent.hostname) {
+    drift.hostname = reportedHostname;
+  }
+  if (reportedPlatform && reportedPlatform !== agent.platform) {
+    drift.platform = reportedPlatform;
+  }
+  if (reportedPlatformVersion && reportedPlatformVersion !== agent.platformVersion) {
+    drift.platformVersion = reportedPlatformVersion;
+  }
+  if (Object.keys(drift).length > 0) {
+    await updateAgentDeviceInfo(db, agent.agentId, drift);
+  }
 
   for (const check of payload.checks) {
     await upsertDeviceCheck(db, {
