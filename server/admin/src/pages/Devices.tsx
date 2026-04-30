@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
+import { toast } from 'sonner';
 import {
   Monitor,
   MonitorOff,
@@ -20,6 +21,8 @@ import {
   Clock,
   ChevronLeft,
   ChevronRight,
+  ShieldOff,
+  Loader2,
 } from 'lucide-react';
 
 interface Device {
@@ -85,7 +88,7 @@ function platformBadge(platform: string) {
 }
 
 export default function Devices() {
-  const { auth } = useAuth();
+  const { auth, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,6 +96,30 @@ export default function Devices() {
   const [cursors, setCursors] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const handleRevoke = async (e: React.MouseEvent, device: Device) => {
+    e.stopPropagation();
+    if (!auth) return;
+    if (!confirm(`Revoke agent ${device.hostname || device.agent_id}?`)) return;
+
+    setRevokingId(device.agent_id);
+    try {
+      await api('/v1/agents/revoke', {
+        method: 'POST',
+        body: { agent_id: device.agent_id },
+        auth: auth.value,
+      });
+      toast.success('Agent revoked');
+      setDevices((prev) =>
+        prev.map((d) => (d.agent_id === device.agent_id ? { ...d, status: 'revoked' } : d)),
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to revoke');
+    } finally {
+      setRevokingId(null);
+    }
+  };
 
   const fetchDevices = (cursor?: string) => {
     if (!auth) return;
@@ -160,13 +187,14 @@ export default function Devices() {
                   <TableHead>Status</TableHead>
                   <TableHead>Last Seen</TableHead>
                   <TableHead>Device ID</TableHead>
+                  {isAdmin && <TableHead className="w-0 text-right">Actions</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {devices.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={5}
+                      colSpan={isAdmin ? 6 : 5}
                       className="h-32 text-center"
                     >
                       <div className="flex flex-col items-center gap-2 text-muted-foreground">
@@ -233,6 +261,27 @@ export default function Devices() {
                         <TableCell className="font-mono text-xs text-muted-foreground">
                           {device.device_id.slice(0, 12)}...
                         </TableCell>
+                        {isAdmin && (
+                          <TableCell className="text-right">
+                            {device.status === 'active' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => handleRevoke(e, device)}
+                                disabled={revokingId === device.agent_id}
+                                className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                aria-label={`Revoke agent ${device.hostname || device.device_id}`}
+                              >
+                                {revokingId === device.agent_id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <ShieldOff className="h-3.5 w-3.5" />
+                                )}
+                                Revoke
+                              </Button>
+                            )}
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })
