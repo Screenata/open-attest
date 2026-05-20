@@ -963,6 +963,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "open-attest-types",
+ "serde_json",
 ]
 
 [[package]]

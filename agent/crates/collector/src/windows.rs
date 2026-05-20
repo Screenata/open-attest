@@ -170,6 +170,58 @@ pub mod parsers {
         let lower = output.to_lowercase();
         lower.contains("mdmurl") && lower.contains("https://")
     }
+
+    /// Parse PowerShell registry-walk output for installed programs. Input is
+    /// one entry per line in `Name@Version` form (already filtered to entries
+    /// that have a DisplayName). Returns sorted, deduped entries.
+    pub fn parse_installed_apps_windows(output: &str) -> Vec<String> {
+        let mut entries: Vec<String> = output
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        entries.sort();
+        entries.dedup();
+        entries
+    }
+
+    /// Parse `Get-LocalUser | Where-Object Enabled | Select Name` output —
+    /// one user name per line, sorted, deduped.
+    pub fn parse_local_users(ps_output: &str) -> Vec<String> {
+        let mut users: Vec<String> = ps_output
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| {
+                !s.is_empty()
+                    && !s.starts_with("---")
+                    && !s.eq_ignore_ascii_case("Name")
+            })
+            .collect();
+        users.sort();
+        users.dedup();
+        users
+    }
+
+    /// Parse `(Get-Service sshd).Status` output. Returns true when "Running".
+    pub fn parse_ssh_daemon_enabled(status: &str) -> bool {
+        status.trim().eq_ignore_ascii_case("running")
+    }
+
+    /// Count valid keys across a set of authorized_keys file contents.
+    /// A "key" is one non-blank line that isn't a `#` comment.
+    pub fn parse_authorized_key_count(file_contents: &[&str]) -> i64 {
+        let mut total: i64 = 0;
+        for content in file_contents {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                total += 1;
+            }
+        }
+        total
+    }
 }
 
 // --- Windows check functions ---
@@ -441,6 +493,97 @@ fn check_hardware_info() -> Vec<CheckResult> {
 }
 
 #[cfg(target_os = "windows")]
+fn check_local_users() -> CheckResult {
+    let output = ps(
+        "Get-LocalUser | Where-Object Enabled -eq $true | Select-Object -ExpandProperty Name"
+    );
+    CheckResult {
+        key: "users.local".to_string(),
+        value: CheckValue::StringList(parsers::parse_local_users(&output)),
+        observed_at: now_iso(),
+        source: "get_localuser".to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn check_users_admins() -> CheckResult {
+    let output = Command::new("net")
+        .args(["localgroup", "Administrators"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    CheckResult {
+        key: "users.admins".to_string(),
+        value: CheckValue::StringList(parsers::parse_admin_members(&output)),
+        observed_at: now_iso(),
+        source: "net_localgroup".to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn check_ssh_daemon_enabled() -> CheckResult {
+    let output = ps("(Get-Service sshd -ErrorAction SilentlyContinue).Status");
+    CheckResult {
+        key: "ssh.daemon_enabled".to_string(),
+        value: CheckValue::Bool(parsers::parse_ssh_daemon_enabled(&output)),
+        observed_at: now_iso(),
+        source: "get_service".to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn check_ssh_authorized_key_count() -> CheckResult {
+    let mut contents: Vec<String> = Vec::new();
+    let program_data = std::env::var("ProgramData")
+        .unwrap_or_else(|_| "C:\\ProgramData".to_string());
+    let admin_keys = format!("{}\\ssh\\administrators_authorized_keys", program_data);
+    if let Ok(c) = std::fs::read_to_string(&admin_keys) {
+        contents.push(c);
+    }
+    if let Ok(entries) = std::fs::read_dir("C:\\Users") {
+        for entry in entries.flatten() {
+            let path = entry.path().join(".ssh").join("authorized_keys");
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                contents.push(c);
+            }
+        }
+    }
+    let refs: Vec<&str> = contents.iter().map(|s| s.as_str()).collect();
+    CheckResult {
+        key: "ssh.authorized_key_count".to_string(),
+        value: CheckValue::Int(parsers::parse_authorized_key_count(&refs)),
+        observed_at: now_iso(),
+        source: "authorized_keys_scan".to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn check_installed_apps() -> CheckResult {
+    let script = "\
+        $paths = @( \
+            'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', \
+            'HKLM:\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', \
+            'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' \
+        ); \
+        Get-ItemProperty $paths -ErrorAction SilentlyContinue | \
+            Where-Object { $_.DisplayName } | \
+            ForEach-Object { \"$($_.DisplayName)@$($_.DisplayVersion)\" }";
+    let output = ps(script);
+    let apps = crate::truncate_inventory(parsers::parse_installed_apps_windows(&output));
+    CheckResult {
+        key: "apps.installed".to_string(),
+        value: CheckValue::StringList(apps),
+        observed_at: now_iso(),
+        source: "registry".to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn collect_inventory() -> Vec<CheckResult> {
+    vec![check_installed_apps()]
+}
+
+#[cfg(target_os = "windows")]
 pub fn collect_all() -> Vec<CheckResult> {
     let mut checks = vec![
         check_disk_encryption(),
@@ -455,6 +598,10 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_enabled(),
         check_password_policy(),
         check_local_admin(),
+        check_local_users(),
+        check_users_admins(),
+        check_ssh_daemon_enabled(),
+        check_ssh_authorized_key_count(),
     ];
     checks.extend(check_hardware_info());
     checks
@@ -592,5 +739,87 @@ mod tests {
     #[test]
     fn serial_number_empty() {
         assert!(parse_serial_number("").is_empty());
+    }
+
+    // --- SSH daemon ---
+    #[test]
+    fn ssh_daemon_running() {
+        assert!(parse_ssh_daemon_enabled("Running\n"));
+    }
+    #[test]
+    fn ssh_daemon_running_lowercase() {
+        assert!(parse_ssh_daemon_enabled("running"));
+    }
+    #[test]
+    fn ssh_daemon_stopped() {
+        assert!(!parse_ssh_daemon_enabled("Stopped\n"));
+    }
+    #[test]
+    fn ssh_daemon_empty() {
+        assert!(!parse_ssh_daemon_enabled(""));
+    }
+
+    // --- Authorized keys ---
+    #[test]
+    fn authorized_key_count_single() {
+        let f = "ssh-ed25519 AAAA... user@host\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_skips_comments() {
+        let f = "# administrators_authorized_keys\nssh-rsa AAAA... admin@host\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_crlf() {
+        let f = "ssh-ed25519 AAAA... a@h\r\nssh-rsa BBBB... b@h\r\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 2);
+    }
+    #[test]
+    fn authorized_key_count_empty() {
+        assert_eq!(parse_authorized_key_count(&[]), 0);
+    }
+
+    // --- Local users (Windows) ---
+    #[test]
+    fn local_users_typical_ps_output() {
+        let out = "Administrator\r\ntao\r\nalice\r\n";
+        assert_eq!(parse_local_users(out), vec!["Administrator", "alice", "tao"]);
+    }
+    #[test]
+    fn local_users_strips_header_and_separator() {
+        let out = "Name\n----\nAdministrator\ntao\n";
+        assert_eq!(parse_local_users(out), vec!["Administrator", "tao"]);
+    }
+    #[test]
+    fn local_users_empty() {
+        assert!(parse_local_users("").is_empty());
+    }
+
+    // --- Installed apps (Windows) ---
+    #[test]
+    fn installed_apps_typical() {
+        let out = "Google Chrome@121.0.6167.85\r\nVisual Studio Code@1.87.0\r\n7-Zip 23.01@23.01\r\n";
+        assert_eq!(
+            parse_installed_apps_windows(out),
+            vec![
+                "7-Zip 23.01@23.01",
+                "Google Chrome@121.0.6167.85",
+                "Visual Studio Code@1.87.0",
+            ]
+        );
+    }
+    #[test]
+    fn installed_apps_skips_blanks() {
+        let out = "\nGoogle Chrome@121\n\nVS Code@1.87\n";
+        assert_eq!(
+            parse_installed_apps_windows(out),
+            vec!["Google Chrome@121", "VS Code@1.87"]
+        );
+    }
+    #[test]
+    fn installed_apps_dedup() {
+        let out = "Google Chrome@121\nGoogle Chrome@121\n";
+        assert_eq!(parse_installed_apps_windows(out), vec!["Google Chrome@121"]);
     }
 }
