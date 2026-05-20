@@ -1,9 +1,10 @@
 [package]
 name = "open-attest-collector"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
 open-attest-types = { path = "../types" }
 chrono = "0.4"
 anyhow = "1"
+serde_json = "1"

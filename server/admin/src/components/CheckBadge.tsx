@@ -15,11 +15,15 @@ export function evaluateCompliance(key: string, val: CheckValueWire): Status {
     case 'firewall.enabled':
     case 'screen_lock.password_required':
     case 'password.enabled':
+    case 'auto_update.security_enabled':
       return val.type === 'bool' && val.value ? 'pass' : 'fail';
     case 'edr.present':
       return val.type === 'bool' && val.value ? 'pass' : 'warn';
     case 'mdm.enrolled':
+    case 'screen_lock.managed_by_mdm':
       return val.type === 'bool' && val.value ? 'pass' : 'info';
+    case 'ssh.daemon_enabled':
+      return 'info';
     case 'screen_lock.timeout_minutes':
       if (val.type !== 'int') return 'fail';
       if (val.value === -1) return 'warn';
@@ -29,12 +33,19 @@ export function evaluateCompliance(key: string, val: CheckValueWire): Status {
       return val.type === 'int' && val.value >= 8 ? 'pass' : 'fail';
     case 'local_admin.is_admin':
       return val.type === 'bool' && !val.value ? 'pass' : 'warn';
+    case 'ssh.authorized_key_count':
+      if (val.type !== 'int') return 'info';
+      return val.value > 0 ? 'warn' : 'pass';
+    case 'users.local':
+    case 'users.admins':
+    case 'apps.installed':
+      return 'info';
     default:
       return 'info';
   }
 }
 
-function formatValue(val: CheckValueWire): string {
+function formatScalar(val: CheckValueWire): string {
   switch (val.type) {
     case 'bool': return String(val.value);
     case 'int': return String(val.value);
@@ -43,11 +54,40 @@ function formatValue(val: CheckValueWire): string {
   }
 }
 
-/** Displays the raw check value as a plain text badge. */
+/** Lists longer than this collapse behind a disclosure. */
+const STRING_LIST_INLINE_LIMIT = 5;
+
+/** Displays the raw check value as a plain text badge. Long string lists
+ * collapse behind a <details> disclosure with an item-count summary. */
 export function CheckValueBadge({ checkValue }: { checkValue: CheckValueWire }) {
+  if (checkValue.type === 'string_list') {
+    const items = checkValue.value;
+    if (items.length === 0) {
+      return <span className="text-xs text-muted-foreground">—</span>;
+    }
+    if (items.length <= STRING_LIST_INLINE_LIMIT) {
+      return (
+        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono">
+          {items.join(', ')}
+        </span>
+      );
+    }
+    return (
+      <details className="max-w-md text-xs">
+        <summary className="inline-flex cursor-pointer items-center rounded-md bg-muted px-2 py-0.5 font-mono hover:bg-muted/80">
+          {items.length} items
+        </summary>
+        <ul className="mt-1 max-h-72 overflow-y-auto rounded-md border bg-muted/30 p-2 font-mono">
+          {items.map((item, idx) => (
+            <li key={idx} className="truncate py-0.5">{item}</li>
+          ))}
+        </ul>
+      </details>
+    );
+  }
   return (
     <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono">
-      {formatValue(checkValue)}
+      {formatScalar(checkValue)}
     </span>
   );
 }

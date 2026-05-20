@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::Parser;
 use cli::{Cli, Commands};
-use open_attest_collector::collect_all;
+use open_attest_collector::{collect_all, collect_inventory};
 use open_attest_config as config;
 use open_attest_signer::{FileKeyStore, KeyStore};
 use open_attest_types::*;
@@ -218,7 +218,8 @@ fn evaluate_compliance(check: &CheckResult) -> Option<&'static str> {
 }
 
 fn do_check(json_output: bool) -> Result<()> {
-    let checks = collect_all();
+    let mut checks = collect_all();
+    checks.extend(collect_inventory());
 
     if json_output {
         let json = serde_json::to_string_pretty(&checks)?;
@@ -264,8 +265,7 @@ fn do_check(json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_attestation_payload(cfg: &config::AgentConfig) -> AttestationPayload {
-    let checks = collect_all();
+fn build_attestation_payload(cfg: &config::AgentConfig, checks: Vec<CheckResult>) -> AttestationPayload {
     let hostname = get_hostname();
     let os_version = get_os_version();
 
@@ -311,7 +311,9 @@ fn do_attest() -> Result<()> {
         bail!("Signing key not found at: {}", cfg.key_path);
     }
 
-    let payload = build_attestation_payload(&cfg);
+    let mut checks = collect_all();
+    checks.extend(collect_inventory());
+    let payload = build_attestation_payload(&cfg, checks);
 
     let sign_fn = |data: &[u8]| -> String { key_store.sign(data).expect("Signing failed") };
 
@@ -363,6 +365,13 @@ fn do_web() -> Result<()> {
     #[cfg(target_os = "linux")]
     Command::new("xdg-open").arg(&url).spawn()?;
     Ok(())
+}
+
+/// True for check keys that come from the heavy inventory collectors.
+/// Drift detection ignores these — an inventory delta shouldn't trigger
+/// an extra attestation between regular snapshots.
+fn is_inventory_key(key: &str) -> bool {
+    key == "apps.installed" || key == "browser_extensions"
 }
 
 fn detect_drift(prev: &[CheckResult], current: &[CheckResult]) -> Vec<String> {
@@ -424,6 +433,11 @@ fn drain_retry_queue(
     }
 }
 
+/// Maximum age of inventory data before the next snapshot tick re-collects it.
+/// Heavy collectors (installed apps, eventually browser extensions) only run
+/// on this cadence; intervening snapshots ship cheap checks only.
+const INVENTORY_INTERVAL_SECS: u64 = 86_400; // 24 hours
+
 async fn do_daemon() -> Result<()> {
     if !config::exists()? {
         bail!("Agent is not enrolled. Run 'open-attest enroll' first.");
@@ -460,6 +474,8 @@ async fn do_daemon() -> Result<()> {
     drift_timer.tick().await;
 
     let mut last_checks: Option<Vec<CheckResult>> = None;
+    let mut last_inventory_at: Option<tokio::time::Instant> = None;
+    let inventory_interval = tokio::time::Duration::from_secs(INVENTORY_INTERVAL_SECS);
 
     loop {
         tokio::select! {
@@ -483,7 +499,14 @@ async fn do_daemon() -> Result<()> {
                 }
             }
             _ = snapshot_timer.tick() => {
-                let payload = build_attestation_payload(&cfg);
+                let include_inventory = last_inventory_at
+                    .map(|t| t.elapsed() >= inventory_interval)
+                    .unwrap_or(true);
+                let mut checks = collect_all();
+                if include_inventory {
+                    checks.extend(collect_inventory());
+                }
+                let payload = build_attestation_payload(&cfg, checks);
                 let payload_json = serde_json::to_string(&payload)?;
                 let sign_fn = |data: &[u8]| -> String {
                     key_store.sign(data).expect("Signing failed")
@@ -492,7 +515,15 @@ async fn do_daemon() -> Result<()> {
                     &cfg.server_url, &cfg.agent_id, &payload, &sign_fn
                 ) {
                     Ok(_) => {
-                        eprintln!("[{}] Attestation submitted", now_iso());
+                        eprintln!(
+                            "[{}] Attestation submitted ({} checks{})",
+                            now_iso(),
+                            payload.checks.len(),
+                            if include_inventory { ", with inventory" } else { "" },
+                        );
+                        if include_inventory {
+                            last_inventory_at = Some(tokio::time::Instant::now());
+                        }
                         last_checks = Some(payload.checks.clone());
                         drain_retry_queue(&queue, &cfg, &key_store);
                     }
@@ -508,7 +539,13 @@ async fn do_daemon() -> Result<()> {
             _ = drift_timer.tick() => {
                 let current_checks = collect_all();
                 if let Some(ref prev) = last_checks {
-                    let changed = detect_drift(prev, &current_checks);
+                    // Compare only cheap checks; ignore inventory entries that
+                    // the previous snapshot may have carried.
+                    let prev_cheap: Vec<_> = prev.iter()
+                        .filter(|c| !is_inventory_key(&c.key))
+                        .cloned()
+                        .collect();
+                    let changed = detect_drift(&prev_cheap, &current_checks);
                     if !changed.is_empty() {
                         eprintln!(
                             "[{}] Drift detected in {} checks, submitting attestation",
@@ -518,8 +555,8 @@ async fn do_daemon() -> Result<()> {
                         for key in &changed {
                             eprintln!("[{}]   Changed: {}", now_iso(), key);
                         }
-                        // Submit immediate attestation
-                        let payload = build_attestation_payload(&cfg);
+                        // Drift attestations are cheap-only — no inventory.
+                        let payload = build_attestation_payload(&cfg, current_checks.clone());
                         let sign_fn = |data: &[u8]| -> String {
                             key_store.sign(data).expect("Signing failed")
                         };
@@ -537,17 +574,23 @@ async fn do_daemon() -> Result<()> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
+    // Most subcommands are synchronous and use blocking HTTP; only `daemon`
+    // needs an async runtime. Wrapping everything in `#[tokio::main]` causes
+    // blocking reqwest clients to panic on drop ("Cannot drop a runtime in a
+    // context where blocking is not allowed").
     let result = match cli.command {
         Commands::Enroll { token, server } => do_enroll(token, server),
         Commands::Status => do_status(),
         Commands::Check { json } => do_check(json),
         Commands::Attest => do_attest(),
         Commands::Uninstall => do_uninstall(),
-        Commands::Daemon => do_daemon().await,
+        Commands::Daemon => {
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            rt.block_on(do_daemon())
+        }
         Commands::Web => do_web(),
     };
 

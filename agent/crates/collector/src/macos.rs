@@ -214,6 +214,119 @@ pub mod parsers {
         let trimmed = askforpassword_output.trim();
         trimmed == "1"
     }
+
+    /// macOS auto security-update toggle. We require both ConfigDataInstall
+    /// (XProtect/MRT definition updates) and CriticalUpdateInstall (critical
+    /// security updates) to be enabled. A missing key reflects the macOS
+    /// default, which is enabled — so empty input is treated as enabled.
+    pub fn parse_auto_update_security_enabled(
+        config_data_install: &str,
+        critical_update_install: &str,
+    ) -> bool {
+        let enabled = |s: &str| -> bool {
+            let t = s.trim();
+            t.is_empty() || t == "1"
+        };
+        enabled(config_data_install) && enabled(critical_update_install)
+    }
+
+    /// True if any configuration profile defines screensaver/screenlock keys,
+    /// or if a managed preference plist for the screensaver is installed.
+    pub fn parse_screen_lock_managed_by_mdm(
+        profiles_output: &str,
+        managed_pref_exists: bool,
+    ) -> bool {
+        if managed_pref_exists {
+            return true;
+        }
+        profiles_output.contains("com.apple.screensaver")
+            || profiles_output.contains("com.apple.screenlock")
+    }
+
+    /// True when sshd is loaded under launchd.
+    /// macOS: `launchctl print system/com.openssh.sshd` exits 0 when loaded.
+    pub fn parse_ssh_daemon_enabled_macos(launchctl_exit: i32) -> bool {
+        launchctl_exit == 0
+    }
+
+    /// Parse `system_profiler SPApplicationsDataType -json` output into a
+    /// sorted, deduped list of `"<name>@<version>"` strings. Apps without a
+    /// version are emitted as just `"<name>"`. Malformed JSON yields an empty
+    /// list.
+    pub fn parse_installed_apps_macos(json: &str) -> Vec<String> {
+        let v: serde_json::Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        let apps = match v.get("SPApplicationsDataType").and_then(|a| a.as_array()) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+        let mut entries: Vec<String> = Vec::with_capacity(apps.len());
+        for app in apps {
+            let name = app
+                .get("_name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                continue;
+            }
+            let version = app
+                .get("version")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .trim();
+            if version.is_empty() {
+                entries.push(name.to_string());
+            } else {
+                entries.push(format!("{}@{}", name, version));
+            }
+        }
+        entries.sort();
+        entries.dedup();
+        entries
+    }
+
+    /// Parse `dscl . -list /Users UniqueID` output. Returns human local users
+    /// (UID ≥ 500, name does not start with `_`), sorted, deduped.
+    pub fn parse_local_users(dscl_output: &str) -> Vec<String> {
+        let mut users: Vec<String> = Vec::new();
+        for line in dscl_output.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0];
+            if name.starts_with('_') {
+                continue;
+            }
+            if let Ok(uid) = parts[1].parse::<i64>() {
+                if uid >= 500 {
+                    users.push(name.to_string());
+                }
+            }
+        }
+        users.sort();
+        users.dedup();
+        users
+    }
+
+    /// Count valid keys across a set of authorized_keys file contents.
+    /// A "key" is one non-blank line that isn't a `#` comment.
+    pub fn parse_authorized_key_count(file_contents: &[&str]) -> i64 {
+        let mut total: i64 = 0;
+        for content in file_contents {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                total += 1;
+            }
+        }
+        total
+    }
 }
 
 // --- Check functions (macOS-specific, use system commands) ---
@@ -500,12 +613,153 @@ fn check_password_policy() -> CheckResult {
 }
 
 #[cfg(target_os = "macos")]
+fn check_auto_update_security() -> CheckResult {
+    let read_default = |key: &str| -> String {
+        Command::new("defaults")
+            .args([
+                "read",
+                "/Library/Preferences/com.apple.SoftwareUpdate",
+                key,
+            ])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    let cdi = read_default("ConfigDataInstall");
+    let cui = read_default("CriticalUpdateInstall");
+    CheckResult {
+        key: "auto_update.security_enabled".to_string(),
+        value: CheckValue::Bool(parsers::parse_auto_update_security_enabled(&cdi, &cui)),
+        observed_at: now_iso(),
+        source: "defaults_softwareupdate".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_screen_lock_managed_by_mdm() -> CheckResult {
+    let profiles_output = Command::new("profiles")
+        .args(["show", "-type", "configuration"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let managed_pref_exists = std::path::Path::new(
+        "/Library/Managed Preferences/com.apple.screensaver.plist",
+    )
+    .exists();
+
+    CheckResult {
+        key: "screen_lock.managed_by_mdm".to_string(),
+        value: CheckValue::Bool(parsers::parse_screen_lock_managed_by_mdm(
+            &profiles_output,
+            managed_pref_exists,
+        )),
+        observed_at: now_iso(),
+        source: "profiles".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_ssh_daemon_enabled() -> CheckResult {
+    let exit = Command::new("launchctl")
+        .args(["print", "system/com.openssh.sshd"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.code().unwrap_or(1))
+        .unwrap_or(1);
+    CheckResult {
+        key: "ssh.daemon_enabled".to_string(),
+        value: CheckValue::Bool(parsers::parse_ssh_daemon_enabled_macos(exit)),
+        observed_at: now_iso(),
+        source: "launchctl".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_local_users() -> CheckResult {
+    let output = Command::new("dscl")
+        .args([".", "-list", "/Users", "UniqueID"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    CheckResult {
+        key: "users.local".to_string(),
+        value: CheckValue::StringList(parsers::parse_local_users(&output)),
+        observed_at: now_iso(),
+        source: "dscl".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_users_admins() -> CheckResult {
+    let output = Command::new("dscl")
+        .args([".", "-read", "/Groups/admin", "GroupMembership"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    CheckResult {
+        key: "users.admins".to_string(),
+        value: CheckValue::StringList(parsers::parse_admin_members(&output)),
+        observed_at: now_iso(),
+        source: "dscl".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_ssh_authorized_key_count() -> CheckResult {
+    let mut contents: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/Users") {
+        for entry in entries.flatten() {
+            let path = entry.path().join(".ssh").join("authorized_keys");
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                contents.push(c);
+            }
+        }
+    }
+    if let Ok(c) = std::fs::read_to_string("/var/root/.ssh/authorized_keys") {
+        contents.push(c);
+    }
+    let refs: Vec<&str> = contents.iter().map(|s| s.as_str()).collect();
+    CheckResult {
+        key: "ssh.authorized_key_count".to_string(),
+        value: CheckValue::Int(parsers::parse_authorized_key_count(&refs)),
+        observed_at: now_iso(),
+        source: "authorized_keys_scan".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_installed_apps() -> CheckResult {
+    let output = Command::new("system_profiler")
+        .args(["SPApplicationsDataType", "-json"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    let apps = crate::truncate_inventory(parsers::parse_installed_apps_macos(&output));
+    CheckResult {
+        key: "apps.installed".to_string(),
+        value: CheckValue::StringList(apps),
+        observed_at: now_iso(),
+        source: "system_profiler".to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn collect_inventory() -> Vec<CheckResult> {
+    vec![check_installed_apps()]
+}
+
+#[cfg(target_os = "macos")]
 pub fn collect_all() -> Vec<CheckResult> {
     let mut checks = vec![
         check_disk_encryption(),
         check_firewall(),
         check_screen_lock_timeout(),
         check_screen_lock_password(),
+        check_screen_lock_managed_by_mdm(),
         check_os_version(),
         check_hostname(),
         check_user_primary(),
@@ -514,6 +768,11 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_enabled(),
         check_password_policy(),
         check_local_admin(),
+        check_local_users(),
+        check_users_admins(),
+        check_auto_update_security(),
+        check_ssh_daemon_enabled(),
+        check_ssh_authorized_key_count(),
     ];
     checks.extend(check_hardware_info());
     checks
@@ -641,4 +900,151 @@ mod tests {
     fn screen_lock_pw_fallback_yes() { assert!(parse_screen_lock_password("", "1\n")); }
     #[test]
     fn screen_lock_pw_fallback_no() { assert!(!parse_screen_lock_password("", "0\n")); }
+    #[test]
+    fn auto_update_both_explicit_one() {
+        assert!(parse_auto_update_security_enabled("1\n", "1\n"));
+    }
+    #[test]
+    fn auto_update_one_disabled() {
+        assert!(!parse_auto_update_security_enabled("0\n", "1\n"));
+        assert!(!parse_auto_update_security_enabled("1\n", "0\n"));
+    }
+    #[test]
+    fn auto_update_missing_keys_default_enabled() {
+        // Empty output (key absent) reflects macOS default, which is enabled.
+        assert!(parse_auto_update_security_enabled("", ""));
+    }
+    #[test]
+    fn auto_update_mixed_missing_and_explicit() {
+        assert!(parse_auto_update_security_enabled("", "1\n"));
+        assert!(!parse_auto_update_security_enabled("", "0\n"));
+    }
+    #[test]
+    fn screen_lock_mdm_managed_pref_plist() {
+        assert!(parse_screen_lock_managed_by_mdm("", true));
+    }
+    #[test]
+    fn screen_lock_mdm_profile_screensaver() {
+        assert!(parse_screen_lock_managed_by_mdm(
+            "_computerlevel[1] attribute: PayloadType: com.apple.screensaver",
+            false
+        ));
+    }
+    #[test]
+    fn screen_lock_mdm_profile_screenlock() {
+        assert!(parse_screen_lock_managed_by_mdm(
+            "PayloadType: com.apple.screenlock",
+            false
+        ));
+    }
+    #[test]
+    fn screen_lock_mdm_none() {
+        assert!(!parse_screen_lock_managed_by_mdm(
+            "There are no configuration profiles installed",
+            false
+        ));
+    }
+    #[test]
+    fn ssh_daemon_macos_loaded() {
+        assert!(parse_ssh_daemon_enabled_macos(0));
+    }
+    #[test]
+    fn ssh_daemon_macos_not_loaded() {
+        assert!(!parse_ssh_daemon_enabled_macos(113));
+        assert!(!parse_ssh_daemon_enabled_macos(1));
+    }
+    #[test]
+    fn authorized_key_count_single() {
+        let f = "ssh-ed25519 AAAA... user@host\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_multiple_files() {
+        let f1 = "ssh-ed25519 AAAA... a@h\nssh-rsa BBBB... b@h\n";
+        let f2 = "ssh-ed25519 CCCC... c@h\n";
+        assert_eq!(parse_authorized_key_count(&[f1, f2]), 3);
+    }
+    #[test]
+    fn authorized_key_count_skips_comments_and_blanks() {
+        let f = "# this is a comment\n\nssh-rsa AAAA... user@host\n   \n# another\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_empty() {
+        assert_eq!(parse_authorized_key_count(&[]), 0);
+        assert_eq!(parse_authorized_key_count(&[""]), 0);
+    }
+
+    // --- Local users (macOS) ---
+    #[test]
+    fn local_users_skips_underscore_and_low_uids() {
+        let out = "_appstore 33\n_assetcache 235\ndaemon 1\nnobody -2\nroot 0\ntao 501\nalice 502\n";
+        assert_eq!(parse_local_users(out), vec!["alice", "tao"]);
+    }
+    #[test]
+    fn local_users_sorted_and_deduped() {
+        let out = "tao 501\nalice 502\ntao 501\n";
+        assert_eq!(parse_local_users(out), vec!["alice", "tao"]);
+    }
+    #[test]
+    fn local_users_empty() {
+        assert!(parse_local_users("").is_empty());
+    }
+
+    // --- Installed apps (macOS) ---
+    #[test]
+    fn installed_apps_typical() {
+        let json = r#"{
+            "SPApplicationsDataType": [
+                {"_name": "Slack", "version": "4.36.140"},
+                {"_name": "1Password 7", "version": "7.9.11"},
+                {"_name": "Calculator", "version": "10.16"}
+            ]
+        }"#;
+        assert_eq!(
+            parse_installed_apps_macos(json),
+            vec!["1Password 7@7.9.11", "Calculator@10.16", "Slack@4.36.140"]
+        );
+    }
+    #[test]
+    fn installed_apps_missing_version_keeps_name_only() {
+        let json = r#"{
+            "SPApplicationsDataType": [
+                {"_name": "WeirdApp"},
+                {"_name": "Slack", "version": "4.36.140"}
+            ]
+        }"#;
+        assert_eq!(
+            parse_installed_apps_macos(json),
+            vec!["Slack@4.36.140", "WeirdApp"]
+        );
+    }
+    #[test]
+    fn installed_apps_dedup() {
+        let json = r#"{
+            "SPApplicationsDataType": [
+                {"_name": "Slack", "version": "4.36.140"},
+                {"_name": "Slack", "version": "4.36.140"}
+            ]
+        }"#;
+        assert_eq!(parse_installed_apps_macos(json), vec!["Slack@4.36.140"]);
+    }
+    #[test]
+    fn installed_apps_malformed_json() {
+        assert!(parse_installed_apps_macos("not json").is_empty());
+    }
+    #[test]
+    fn installed_apps_missing_key() {
+        assert!(parse_installed_apps_macos("{}").is_empty());
+    }
+    #[test]
+    fn installed_apps_skips_blank_name() {
+        let json = r#"{
+            "SPApplicationsDataType": [
+                {"_name": "", "version": "1.0"},
+                {"_name": "Slack", "version": "4.36"}
+            ]
+        }"#;
+        assert_eq!(parse_installed_apps_macos(json), vec!["Slack@4.36"]);
+    }
 }

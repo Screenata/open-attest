@@ -239,6 +239,115 @@ pub mod parsers {
         }
         vec![]
     }
+
+    /// Parse package output already formatted as `name@version\n` per line
+    /// (e.g. from `dpkg-query -W -f='${binary:Package}@${Version}\n'` or
+    /// `rpm -qa --queryformat '%{NAME}@%{VERSION}\n'`).
+    pub fn parse_installed_apps_at_format(output: &str) -> Vec<String> {
+        let mut entries: Vec<String> = output
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        entries.sort();
+        entries.dedup();
+        entries
+    }
+
+    /// Parse `pacman -Q` output: lines of `<name> <version>`.
+    pub fn parse_installed_apps_pacman(output: &str) -> Vec<String> {
+        let mut entries: Vec<String> = output
+            .lines()
+            .filter_map(|l| {
+                let trimmed = l.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let mut split = trimmed.splitn(2, char::is_whitespace);
+                let name = split.next()?.trim();
+                let version = split.next().unwrap_or("").trim();
+                if name.is_empty() {
+                    return None;
+                }
+                if version.is_empty() {
+                    Some(name.to_string())
+                } else {
+                    Some(format!("{}@{}", name, version))
+                }
+            })
+            .collect();
+        entries.sort();
+        entries.dedup();
+        entries
+    }
+
+    /// Parse `/etc/passwd` for human local users. Returns names with UID
+    /// 1000–65533 whose login shell isn't nologin/false.
+    pub fn parse_local_users(etc_passwd: &str) -> Vec<String> {
+        let mut users: Vec<String> = Vec::new();
+        for line in etc_passwd.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            // name:passwd:uid:gid:gecos:home:shell
+            let parts: Vec<&str> = trimmed.split(':').collect();
+            if parts.len() < 7 {
+                continue;
+            }
+            let name = parts[0];
+            let shell = parts[6];
+            if shell.ends_with("nologin") || shell.ends_with("/false") {
+                continue;
+            }
+            if let Ok(uid) = parts[2].parse::<i64>() {
+                if uid >= 1000 && uid < 65534 {
+                    users.push(name.to_string());
+                }
+            }
+        }
+        users.sort();
+        users.dedup();
+        users
+    }
+
+    /// True if sshd is active via systemd, or a sshd process appears in ps output.
+    pub fn parse_ssh_daemon_enabled(
+        ssh_active: &str,
+        sshd_active: &str,
+        ps_output: &str,
+    ) -> bool {
+        if ssh_active.trim() == "active" || sshd_active.trim() == "active" {
+            return true;
+        }
+        for line in ps_output.lines() {
+            for token in line.split_whitespace() {
+                if token == "sshd"
+                    || token.ends_with("/sshd")
+                    || token.ends_with("/sshd:")
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Count valid keys across a set of authorized_keys file contents.
+    /// A "key" is one non-blank line that isn't a `#` comment.
+    pub fn parse_authorized_key_count(file_contents: &[&str]) -> i64 {
+        let mut total: i64 = 0;
+        for content in file_contents {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                total += 1;
+            }
+        }
+        total
+    }
 }
 
 // --- Check functions (Linux-specific, use system commands) ---
@@ -567,6 +676,141 @@ fn check_hardware_info() -> Vec<CheckResult> {
 }
 
 #[cfg(target_os = "linux")]
+fn check_local_users() -> CheckResult {
+    let etc_passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    CheckResult {
+        key: "users.local".to_string(),
+        value: CheckValue::StringList(parsers::parse_local_users(&etc_passwd)),
+        observed_at: now_iso(),
+        source: "etc_passwd".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_users_admins() -> CheckResult {
+    let etc_group = std::fs::read_to_string("/etc/group").unwrap_or_default();
+    CheckResult {
+        key: "users.admins".to_string(),
+        value: CheckValue::StringList(parsers::parse_admin_members(&etc_group)),
+        observed_at: now_iso(),
+        source: "etc_group".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_ssh_daemon_enabled() -> CheckResult {
+    let read_active = |unit: &str| -> String {
+        Command::new("systemctl")
+            .args(["is-active", unit])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    let ssh = read_active("ssh.service");
+    let sshd = read_active("sshd.service");
+    let ps_output = Command::new("ps")
+        .args(["-eo", "comm,args"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    CheckResult {
+        key: "ssh.daemon_enabled".to_string(),
+        value: CheckValue::Bool(parsers::parse_ssh_daemon_enabled(&ssh, &sshd, &ps_output)),
+        observed_at: now_iso(),
+        source: "systemctl".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_ssh_authorized_key_count() -> CheckResult {
+    let mut contents: Vec<String> = Vec::new();
+    if let Ok(c) = std::fs::read_to_string("/root/.ssh/authorized_keys") {
+        contents.push(c);
+    }
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let path = entry.path().join(".ssh").join("authorized_keys");
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                contents.push(c);
+            }
+        }
+    }
+    let refs: Vec<&str> = contents.iter().map(|s| s.as_str()).collect();
+    CheckResult {
+        key: "ssh.authorized_key_count".to_string(),
+        value: CheckValue::Int(parsers::parse_authorized_key_count(&refs)),
+        observed_at: now_iso(),
+        source: "authorized_keys_scan".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_installed_apps() -> CheckResult {
+    let try_cmd = |program: &str, args: &[&str]| -> Option<String> {
+        let out = Command::new(program).args(args).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        if s.trim().is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+
+    if let Some(raw) = try_cmd(
+        "dpkg-query",
+        &["-W", "-f=${binary:Package}@${Version}\n"],
+    ) {
+        let apps = crate::truncate_inventory(parsers::parse_installed_apps_at_format(&raw));
+        return CheckResult {
+            key: "apps.installed".to_string(),
+            value: CheckValue::StringList(apps),
+            observed_at: now_iso(),
+            source: "dpkg".to_string(),
+        };
+    }
+
+    if let Some(raw) = try_cmd(
+        "rpm",
+        &["-qa", "--queryformat", "%{NAME}@%{VERSION}\n"],
+    ) {
+        let apps = crate::truncate_inventory(parsers::parse_installed_apps_at_format(&raw));
+        return CheckResult {
+            key: "apps.installed".to_string(),
+            value: CheckValue::StringList(apps),
+            observed_at: now_iso(),
+            source: "rpm".to_string(),
+        };
+    }
+
+    if let Some(raw) = try_cmd("pacman", &["-Q"]) {
+        let apps = crate::truncate_inventory(parsers::parse_installed_apps_pacman(&raw));
+        return CheckResult {
+            key: "apps.installed".to_string(),
+            value: CheckValue::StringList(apps),
+            observed_at: now_iso(),
+            source: "pacman".to_string(),
+        };
+    }
+
+    CheckResult {
+        key: "apps.installed".to_string(),
+        value: CheckValue::StringList(vec![]),
+        observed_at: now_iso(),
+        source: "unavailable".to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn collect_inventory() -> Vec<CheckResult> {
+    vec![check_installed_apps()]
+}
+
+#[cfg(target_os = "linux")]
 pub fn collect_all() -> Vec<CheckResult> {
     let mut checks = vec![
         check_disk_encryption(),
@@ -581,6 +825,10 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_password_enabled(),
         check_password_policy(),
         check_local_admin(),
+        check_local_users(),
+        check_users_admins(),
+        check_ssh_daemon_enabled(),
+        check_ssh_authorized_key_count(),
     ];
     checks.extend(check_hardware_info());
     checks
@@ -816,5 +1064,118 @@ mod tests {
         assert!(v.is_empty());
         assert!(p.is_empty());
         assert!(s.is_empty());
+    }
+
+    // --- SSH daemon ---
+    #[test]
+    fn ssh_daemon_systemctl_ssh_active() {
+        assert!(parse_ssh_daemon_enabled("active\n", "inactive\n", ""));
+    }
+    #[test]
+    fn ssh_daemon_systemctl_sshd_active() {
+        assert!(parse_ssh_daemon_enabled("inactive\n", "active\n", ""));
+    }
+    #[test]
+    fn ssh_daemon_ps_fallback() {
+        let ps = "root  1234 ?  Ss  /usr/sbin/sshd\nuser  5678 ?  S  bash\n";
+        assert!(parse_ssh_daemon_enabled("inactive\n", "inactive\n", ps));
+    }
+    #[test]
+    fn ssh_daemon_none() {
+        assert!(!parse_ssh_daemon_enabled("inactive\n", "inactive\n", "user 1 bash\n"));
+    }
+    #[test]
+    fn ssh_daemon_does_not_match_pseudo() {
+        // Avoid matching processes like "sshd-helper" if they appear as bare tokens.
+        // The current matcher accepts only token == "sshd" or ending in "/sshd"/"/sshd:".
+        assert!(!parse_ssh_daemon_enabled("inactive\n", "inactive\n", "user 1 sshd-something\n"));
+    }
+
+    // --- Authorized keys ---
+    #[test]
+    fn authorized_key_count_single() {
+        let f = "ssh-ed25519 AAAA... user@host\n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_skips_comments_and_blanks() {
+        let f = "# comment\n\nssh-rsa AAAA... user@host\n  \n";
+        assert_eq!(parse_authorized_key_count(&[f]), 1);
+    }
+    #[test]
+    fn authorized_key_count_multiple_files() {
+        let f1 = "ssh-ed25519 AAAA... a@h\nssh-rsa BBBB... b@h\n";
+        let f2 = "ssh-ed25519 CCCC... c@h\n";
+        assert_eq!(parse_authorized_key_count(&[f1, f2]), 3);
+    }
+    #[test]
+    fn authorized_key_count_empty() {
+        assert_eq!(parse_authorized_key_count(&[]), 0);
+    }
+
+    // --- Local users (Linux) ---
+    #[test]
+    fn local_users_skips_system_and_nologin() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+                      bin:x:2:2:bin:/bin:/usr/sbin/nologin\n\
+                      tao:x:1000:1000:Tao,,,:/home/tao:/bin/bash\n\
+                      alice:x:1001:1001:Alice,,,:/home/alice:/bin/zsh\n\
+                      svc:x:1002:1002:service:/home/svc:/usr/sbin/nologin\n\
+                      nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n";
+        assert_eq!(parse_local_users(passwd), vec!["alice", "tao"]);
+    }
+    #[test]
+    fn local_users_ignores_comments_and_blanks() {
+        let passwd = "# comment\n\ntao:x:1000:1000::/home/tao:/bin/bash\n";
+        assert_eq!(parse_local_users(passwd), vec!["tao"]);
+    }
+    #[test]
+    fn local_users_dedup() {
+        let passwd = "tao:x:1000:1000::/home/tao:/bin/bash\ntao:x:1000:1000::/home/tao:/bin/bash\n";
+        assert_eq!(parse_local_users(passwd), vec!["tao"]);
+    }
+    #[test]
+    fn local_users_empty() {
+        assert!(parse_local_users("").is_empty());
+    }
+
+    // --- Installed apps (Linux) ---
+    #[test]
+    fn installed_apps_at_format_dpkg_like() {
+        let out = "bash@5.1-6\ncoreutils@8.32-4.1\nsystemd@247.3-7\n";
+        assert_eq!(
+            parse_installed_apps_at_format(out),
+            vec!["bash@5.1-6", "coreutils@8.32-4.1", "systemd@247.3-7"]
+        );
+    }
+    #[test]
+    fn installed_apps_at_format_skips_blanks() {
+        let out = "\nbash@5.1-6\n\ncoreutils@8.32-4.1\n";
+        assert_eq!(
+            parse_installed_apps_at_format(out),
+            vec!["bash@5.1-6", "coreutils@8.32-4.1"]
+        );
+    }
+    #[test]
+    fn installed_apps_at_format_dedups() {
+        let out = "bash@5.1-6\nbash@5.1-6\n";
+        assert_eq!(parse_installed_apps_at_format(out), vec!["bash@5.1-6"]);
+    }
+    #[test]
+    fn installed_apps_pacman_typical() {
+        let out = "zsh 5.9-3\nzlib 1.3\ngrep 3.10-1\n";
+        assert_eq!(
+            parse_installed_apps_pacman(out),
+            vec!["grep@3.10-1", "zlib@1.3", "zsh@5.9-3"]
+        );
+    }
+    #[test]
+    fn installed_apps_pacman_skips_malformed() {
+        let out = "zsh 5.9-3\nno-version-line\n";
+        assert_eq!(
+            parse_installed_apps_pacman(out),
+            vec!["no-version-line", "zsh@5.9-3"]
+        );
     }
 }

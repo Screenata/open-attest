@@ -21,7 +21,7 @@ export async function route(request: Request, env: Env): Promise<Response> {
 
   // Health check
   if (method === 'GET' && path === '/health') {
-    return new Response(JSON.stringify({ name: 'open-attest', version: '0.4.0', status: 'ok' }), {
+    return new Response(JSON.stringify({ name: 'open-attest', version: '0.5.0', status: 'ok' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
