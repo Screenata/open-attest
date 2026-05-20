@@ -26,6 +26,25 @@ export const agents = sqliteTable('agents', {
   status: text('status').notNull().default('active'),
   enrolledAt: text('enrolled_at').notNull().default(sql`(datetime('now'))`),
   lastSeenAt: text('last_seen_at'),
+  // Updater fields — populated from agent payloads / admin overrides.
+  currentVersion: text('current_version'),
+  targetTriple: text('target_triple'),
+  targetVersion: text('target_version'),  // admin pin; nullable
+  updateChannel: text('update_channel').notNull().default('stable'), // 'stable' | 'beta' | 'paused'
+  lastUpdateAttemptAt: text('last_update_attempt_at'),
+  lastUpdateFailure: text('last_update_failure'),
+});
+
+// Cached GitHub release manifest. Populated by the hourly cron poller.
+export const releases = sqliteTable('releases', {
+  version: text('version').primaryKey(), // e.g. "0.6.0"
+  channel: text('channel').notNull(),    // 'stable' | 'beta'
+  publishedAt: text('published_at').notNull(),
+  rolloutPercent: integer('rollout_percent').notNull().default(100),
+  notes: text('notes'),
+  // JSON map: { "<rust-target-triple>": { url, sig_url, sha256 } }
+  assetsJson: text('assets_json').notNull(),
+  fetchedAt: text('fetched_at').notNull().default(sql`(datetime('now'))`),
 });
 
 export const attestations = sqliteTable('attestations', {

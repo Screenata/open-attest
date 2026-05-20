@@ -8,6 +8,12 @@ import { handleRekey } from './routes/rekey';
 import { handleListDevices, handleGetDevice } from './routes/devices';
 import { handleCreateApiKey, handleListApiKeys, handleDeleteApiKey, handleCreateToken, handleListTokens, handleAdminStatus } from './routes/admin';
 import { handleEnrollmentPage } from './routes/enrollment-page';
+import {
+  handleListReleases,
+  handleRefreshReleases,
+  handlePatchRelease,
+  handlePatchDeviceUpdate,
+} from './routes/releases';
 
 export async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -21,7 +27,7 @@ export async function route(request: Request, env: Env): Promise<Response> {
 
   // Health check
   if (method === 'GET' && path === '/health') {
-    return new Response(JSON.stringify({ name: 'open-attest', version: '0.5.0', status: 'ok' }), {
+    return new Response(JSON.stringify({ name: 'open-attest', version: '0.6.0', status: 'ok' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -51,6 +57,24 @@ export async function route(request: Request, env: Env): Promise<Response> {
 
   if (method === 'GET' && path === '/v1/admin/status') {
     return handleAdminStatus(request, env);
+  }
+
+  if (method === 'GET' && path === '/v1/admin/releases') {
+    return handleListReleases(request, env);
+  }
+
+  if (method === 'POST' && path === '/v1/admin/releases/refresh') {
+    return handleRefreshReleases(request, env);
+  }
+
+  const releaseMatch = path.match(/^\/v1\/admin\/releases\/([^/]+)$/);
+  if (method === 'PATCH' && releaseMatch) {
+    return handlePatchRelease(request, env, releaseMatch[1]);
+  }
+
+  const deviceUpdateMatch = path.match(/^\/v1\/admin\/devices\/([^/]+)\/update$/);
+  if (method === 'PATCH' && deviceUpdateMatch) {
+    return handlePatchDeviceUpdate(request, env, deviceUpdateMatch[1]);
   }
 
   // --- Enrollment page (public, no auth) ---

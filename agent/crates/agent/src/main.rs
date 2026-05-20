@@ -2,6 +2,8 @@ mod cli;
 #[cfg(target_os = "macos")]
 mod launchd;
 mod retry;
+#[cfg(target_os = "linux")]
+mod systemd;
 #[cfg(target_os = "windows")]
 mod winsvc;
 
@@ -17,6 +19,7 @@ use std::process::Command;
 
 const AGENT_NAME: &str = "open-attest";
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_TARGET: &str = env!("BUILD_TARGET");
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
@@ -158,6 +161,10 @@ fn do_enroll(token: String, server: String) -> Result<()> {
     if let Err(e) = launchd::install_launchd() {
         eprintln!("Warning: Failed to install LaunchAgent: {}", e);
     }
+    #[cfg(target_os = "linux")]
+    if let Err(e) = systemd::install_systemd() {
+        eprintln!("Warning: Failed to install systemd user unit: {}", e);
+    }
     #[cfg(target_os = "windows")]
     if let Err(e) = winsvc::install_task() {
         eprintln!("Warning: Failed to install Scheduled Task: {}", e);
@@ -277,6 +284,7 @@ fn build_attestation_payload(cfg: &config::AgentConfig, checks: Vec<CheckResult>
             name: AGENT_NAME.to_string(),
             version: AGENT_VERSION.to_string(),
             agent_id: cfg.agent_id.clone(),
+            target_triple: BUILD_TARGET.to_string(),
         },
         device: DeviceInfo {
             device_id: cfg.device_id.clone(),
@@ -337,9 +345,37 @@ fn do_uninstall() -> Result<()> {
     if let Err(e) = launchd::uninstall_launchd() {
         eprintln!("Warning: Failed to uninstall LaunchAgent: {}", e);
     }
+    #[cfg(target_os = "linux")]
+    if let Err(e) = systemd::uninstall_systemd() {
+        eprintln!("Warning: Failed to uninstall systemd unit: {}", e);
+    }
     #[cfg(target_os = "windows")]
     if let Err(e) = winsvc::uninstall_task() {
         eprintln!("Warning: Failed to remove Scheduled Task: {}", e);
+    }
+
+    // Remove the managed binary and any .prev/.failed siblings, plus the
+    // bin directory if it ends up empty.
+    let managed_bin = config::managed_binary_path()?;
+    for suffix in ["", ".prev", ".failed", ".new", ".incoming"] {
+        let p = if suffix.is_empty() {
+            managed_bin.clone()
+        } else {
+            let mut s = managed_bin.as_os_str().to_owned();
+            s.push(suffix);
+            std::path::PathBuf::from(s)
+        };
+        if p.exists() {
+            if let Err(e) = std::fs::remove_file(&p) {
+                eprintln!("Warning: failed to remove {}: {}", p.display(), e);
+            }
+        }
+    }
+    let bin_dir = config::bin_dir()?;
+    if bin_dir.exists() {
+        // remove_dir succeeds only if the directory is empty — fine, we
+        // don't want to nuke ~/.local/bin on Linux if other things live there.
+        let _ = std::fs::remove_dir(&bin_dir);
     }
 
     // Delete config directory
@@ -364,6 +400,81 @@ fn do_web() -> Result<()> {
     Command::new("cmd").args(["/c", "start", &url]).spawn()?;
     #[cfg(target_os = "linux")]
     Command::new("xdg-open").arg(&url).spawn()?;
+    Ok(())
+}
+
+fn do_update(force: bool) -> Result<()> {
+    if !config::exists()? {
+        bail!("Agent is not enrolled. Run 'open-attest enroll' first.");
+    }
+    let cfg = config::load()?;
+    let key_store = FileKeyStore::new(&cfg.key_path);
+    if !key_store.exists() {
+        bail!("Signing key not found at: {}", cfg.key_path);
+    }
+
+    let payload = HeartbeatPayload {
+        device_id: cfg.device_id.clone(),
+        agent_id: cfg.agent_id.clone(),
+        timestamp: now_iso(),
+    };
+    let sign_fn = |data: &[u8]| -> String { key_store.sign(data).expect("Signing failed") };
+    let response =
+        open_attest_transport::send_heartbeat(&cfg.server_url, &cfg.agent_id, &payload, &sign_fn)
+            .context("heartbeat failed")?;
+
+    let mut offer = match response.update_offer {
+        Some(o) => o,
+        None => {
+            println!("No update available.");
+            return Ok(());
+        }
+    };
+    if force {
+        offer.force = true;
+    }
+
+    let bin_path = config::managed_binary_path()?;
+    let state_dir = config::state_dir()?;
+    let current_exe = std::env::current_exe().context("current_exe")?;
+    let ctx = open_attest_updater::UpdateContext {
+        state_dir: &state_dir,
+        bin_path: &bin_path,
+        current_exe: &current_exe,
+        running_version: AGENT_VERSION,
+        running_target_triple: BUILD_TARGET,
+        release_pubkey: open_attest_updater::RELEASE_PUBKEY,
+    };
+
+    match open_attest_updater::check_and_apply(&offer, &ctx)? {
+        open_attest_updater::UpdateOutcome::Installed { version } => {
+            println!(
+                "Installed {version}. Restart the daemon to use the new version."
+            );
+        }
+        open_attest_updater::UpdateOutcome::SkippedAlreadyAtVersion => {
+            println!("Already at offered version ({}).", offer.version);
+        }
+        open_attest_updater::UpdateOutcome::SkippedBinaryNotManaged => {
+            println!(
+                "Refusing to update: this binary is not at the managed location ({}). \
+                 Reinstall via .pkg/.tar.gz to enable auto-updates.",
+                bin_path.display()
+            );
+        }
+        open_attest_updater::UpdateOutcome::SkippedRateLimited => {
+            println!("Skipped: another update attempt was tried recently. Use --force to override.");
+        }
+        open_attest_updater::UpdateOutcome::SkippedNonIdle => {
+            println!(
+                "Skipped: an update is already in flight (state is non-idle). \
+                 Restart the daemon or wait for probation to complete."
+            );
+        }
+        open_attest_updater::UpdateOutcome::Failed { version, reason } => {
+            bail!("Update to {version} failed: {reason}");
+        }
+    }
     Ok(())
 }
 
@@ -438,6 +549,37 @@ fn drain_retry_queue(
 /// on this cadence; intervening snapshots ship cheap checks only.
 const INVENTORY_INTERVAL_SECS: u64 = 86_400; // 24 hours
 
+/// Returns true if the daemon should exit (a successful swap happened and we
+/// want the supervisor to restart us on the new binary).
+fn handle_update_offer(
+    offer: Option<UpdateOffer>,
+    ctx: &open_attest_updater::UpdateContext,
+) -> bool {
+    let Some(offer) = offer else {
+        return false;
+    };
+    match open_attest_updater::check_and_apply(&offer, ctx) {
+        Ok(open_attest_updater::UpdateOutcome::Installed { version }) => {
+            eprintln!(
+                "[{}] Update to {} installed; exiting for supervisor restart",
+                now_iso(),
+                version
+            );
+            true
+        }
+        Ok(outcome) => {
+            // Skip variants and Failed both stay quiet at info level — these
+            // are expected behaviors (already-at-version, rate-limited, etc.).
+            eprintln!("[{}] Update offer: {:?}", now_iso(), outcome);
+            false
+        }
+        Err(e) => {
+            eprintln!("[{}] Update check failed: {:#}", now_iso(), e);
+            false
+        }
+    }
+}
+
 async fn do_daemon() -> Result<()> {
     if !config::exists()? {
         bail!("Agent is not enrolled. Run 'open-attest enroll' first.");
@@ -452,6 +594,39 @@ async fn do_daemon() -> Result<()> {
 
     let retry_dir = config::config_dir()?.join("retry");
     let queue = retry::RetryQueue::new(&retry_dir)?;
+
+    // Build the updater context once; reuse for every check. If the boot-time
+    // check rolls back, we exit cleanly so the supervisor restarts on the
+    // restored .prev binary.
+    let updater_state_dir = config::state_dir()?;
+    let updater_bin_path = config::managed_binary_path()?;
+    let updater_current_exe = std::env::current_exe().context("current_exe")?;
+    let updater_ctx = open_attest_updater::UpdateContext {
+        state_dir: &updater_state_dir,
+        bin_path: &updater_bin_path,
+        current_exe: &updater_current_exe,
+        running_version: AGENT_VERSION,
+        running_target_triple: BUILD_TARGET,
+        release_pubkey: open_attest_updater::RELEASE_PUBKEY,
+    };
+    match open_attest_updater::on_daemon_boot(&updater_ctx) {
+        Ok(open_attest_updater::BootAction::RolledBack) => {
+            eprintln!(
+                "[{}] Rollback complete; exiting for supervisor restart on previous binary",
+                now_iso()
+            );
+            return Ok(());
+        }
+        Ok(open_attest_updater::BootAction::Confirmed) => {
+            eprintln!(
+                "[{}] Update to {} confirmed; previous binary cleaned up",
+                now_iso(),
+                AGENT_VERSION
+            );
+        }
+        Ok(open_attest_updater::BootAction::None) => {}
+        Err(e) => eprintln!("[{}] on_daemon_boot failed: {:#}", now_iso(), e),
+    }
 
     println!(
         "Daemon started. Heartbeat every {}s, snapshot every {}s.",
@@ -491,9 +666,13 @@ async fn do_daemon() -> Result<()> {
                 match open_attest_transport::send_heartbeat(
                     &cfg.server_url, &cfg.agent_id, &payload, &sign_fn
                 ) {
-                    Ok(_) => {
+                    Ok(response) => {
                         eprintln!("[{}] Heartbeat sent", now_iso());
+                        let _ = open_attest_updater::record_successful_attestation(&updater_state_dir);
                         drain_retry_queue(&queue, &cfg, &key_store);
+                        if handle_update_offer(response.update_offer, &updater_ctx) {
+                            return Ok(());
+                        }
                     }
                     Err(e) => eprintln!("[{}] Heartbeat failed: {}", now_iso(), e),
                 }
@@ -514,7 +693,7 @@ async fn do_daemon() -> Result<()> {
                 match open_attest_transport::submit_attestation(
                     &cfg.server_url, &cfg.agent_id, &payload, &sign_fn
                 ) {
-                    Ok(_) => {
+                    Ok(response) => {
                         eprintln!(
                             "[{}] Attestation submitted ({} checks{})",
                             now_iso(),
@@ -525,7 +704,11 @@ async fn do_daemon() -> Result<()> {
                             last_inventory_at = Some(tokio::time::Instant::now());
                         }
                         last_checks = Some(payload.checks.clone());
+                        let _ = open_attest_updater::record_successful_attestation(&updater_state_dir);
                         drain_retry_queue(&queue, &cfg, &key_store);
+                        if handle_update_offer(response.update_offer, &updater_ctx) {
+                            return Ok(());
+                        }
                     }
                     Err(e) => {
                         eprintln!("[{}] Attestation failed: {}, queuing for retry", now_iso(), e);
@@ -592,6 +775,7 @@ fn main() {
             rt.block_on(do_daemon())
         }
         Commands::Web => do_web(),
+        Commands::Update { force } => do_update(force),
     };
 
     if let Err(e) = result {

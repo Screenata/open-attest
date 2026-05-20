@@ -18,3 +18,7 @@ binding = "DB"
 database_name = "open-attest"
 database_id = "de249f98-2c7a-474f-9104-431ad57d78e7"  # Run: wrangler d1 create open-attest
 migrations_dir = "drizzle/migrations"
+
+# Hourly poll of GitHub Releases for the cached update manifest.
+[triggers]
+crons = ["0 * * * *"]
