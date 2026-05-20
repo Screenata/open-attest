@@ -23,16 +23,19 @@ open-attest is built for teams of 5-50 where the CTO is also the IT admin. Deplo
 
 ## What it does
 
-open-attest runs on your team's laptops and reports security posture to a central server. It collects 13 posture checks:
+open-attest runs on your team's laptops and reports security posture to a central server. It collects 20 posture checks:
 
 - Disk encryption (FileVault / BitLocker / LUKS)
 - Firewall status
-- Screen lock timeout and password requirement
-- OS version
+- Screen lock timeout, password requirement, and MDM-managed lock policy
+- OS version, hardware identity (manufacturer, model, serial)
 - EDR/antivirus presence (XProtect, CrowdStrike, SentinelOne, AppArmor, SELinux, etc.)
 - Password policy and login password
-- Local admin membership
+- Local admin membership + full admin roster + full local-user roster
 - MDM enrollment
+- Auto security-update toggle (macOS)
+- SSH daemon state and authorized-key count
+- Installed application inventory (daily snapshot)
 
 Every attestation is signed with Ed25519 so the server can verify it came from a registered agent and hasn't been tampered with.
 
@@ -91,20 +94,36 @@ open-attest uninstall       # remove agent and daemon
 
 ## Agent checks
 
-| Check | Key | Type | macOS | Windows | Linux |
-|-------|-----|------|-------|---------|-------|
-| Disk encryption | `disk_encryption.enabled` | bool | FileVault | BitLocker | LUKS / dm-crypt |
-| Firewall | `firewall.enabled` | bool | Application Firewall | Windows Firewall | ufw / iptables / firewalld |
-| Screen lock timeout | `screen_lock.timeout_minutes` | int | Screensaver idle time | Registry / powercfg | gsettings / KDE / XFCE |
-| Screen lock password | `screen_lock.password_required` | bool | sysadminctl | Registry | gsettings / KDE / XFCE |
-| Login password set | `password.enabled` | bool | dscl authonly | net user | /etc/shadow |
-| Password policy | `password_policy.min_length` | int | pwpolicy | ADSI / net accounts | PAM / pwquality / login.defs |
-| OS version | `os.version` | string | sw_vers | .NET Environment | /etc/os-release |
-| Hostname | `hostname` | string | hostname | hostname | hostname |
-| Primary user | `user.primary` | string | whoami | whoami | whoami |
-| MDM enrollment | `mdm.enrolled` | bool | profiles | dsregcmd | N/A |
-| EDR/AV presence | `edr.present` | bool | XProtect + process scan | SecurityCenter2 + Defender | Process scan + AppArmor/SELinux |
-| Local admin | `local_admin.is_admin` | bool | dscl | net localgroup | /etc/group (sudo/wheel) |
+| Check | Key | Type | macOS | Windows | Linux | Status |
+|-------|-----|------|-------|---------|-------|--------|
+| Disk encryption | `disk_encryption.enabled` | bool | FileVault | BitLocker | LUKS / dm-crypt | Available |
+| Firewall | `firewall.enabled` | bool | Application Firewall | Windows Firewall | ufw / iptables / firewalld | Available |
+| Screen lock timeout | `screen_lock.timeout_minutes` | int | Screensaver idle time | Registry / powercfg | gsettings / KDE / XFCE | Available |
+| Screen lock password | `screen_lock.password_required` | bool | sysadminctl | Registry | gsettings / KDE / XFCE | Available |
+| Screen lock policy is MDM-enforced | `screen_lock.managed_by_mdm` | bool | profiles + Managed Preferences | — | — | Available |
+| Login password set | `password.enabled` | bool | dscl authonly | net user | /etc/shadow | Available |
+| Password policy | `password_policy.min_length` | int | pwpolicy | ADSI / net accounts | PAM / pwquality / login.defs | Available |
+| Auto security-update enabled | `auto_update.security_enabled` | bool | com.apple.SoftwareUpdate prefs | — | — | Available |
+| OS version | `os.version` | string | sw_vers | .NET Environment | /etc/os-release | Available |
+| Hostname | `hostname` | string | hostname | hostname | hostname | Available |
+| Primary user | `user.primary` | string | whoami | whoami | whoami | Available |
+| Local users | `users.local` | string[] | dscl /Users | Get-LocalUser | /etc/passwd | Available |
+| Local administrators | `users.admins` | string[] | dscl /Groups/admin | net localgroup Administrators | /etc/group (sudo/wheel) | Available |
+| MDM enrollment | `mdm.enrolled` | bool | profiles | dsregcmd | N/A | Available |
+| EDR/AV presence | `edr.present` | bool | XProtect + process scan | SecurityCenter2 + Defender | Process scan + AppArmor/SELinux | Available |
+| SSH daemon enabled | `ssh.daemon_enabled` | bool | launchctl | Get-Service sshd | systemctl + ps | Available |
+| SSH authorized key count | `ssh.authorized_key_count` | int | ~/.ssh/authorized_keys scan | %ProgramData%\ssh + per-user | /home/*/.ssh + /root/.ssh | Available |
+| Local admin (current user) | `local_admin.is_admin` | bool | dscl | net localgroup | /etc/group (sudo/wheel) | Available |
+| Installed apps (daily snapshot) | `apps.installed` | string[] | system_profiler SPApplicationsDataType | HKLM/HKCU Uninstall registry | dpkg / rpm / pacman | Available |
+| Device hardware | `device.manufacturer`, `device.model`, `device.serial_number` | string | system_profiler | WMI | DMI sysfs | Available |
+| Browser extensions (daily snapshot) | `browser_extensions` | string[] | Safari + Chrome / Edge / Brave / Firefox profiles | Chrome / Edge / Brave / Firefox profiles | Chrome / Edge / Brave / Firefox profiles | Planned |
+| App CVEs (derived from `apps.installed`) | `apps.cves` | string[] | offline CVE feed cross-ref | offline CVE feed cross-ref | offline CVE feed cross-ref | Planned |
+| Browser enterprise policy | `browser.policies` | string[] | managed plist | managed registry | managed prefs | Planned |
+| Dotfile secret heuristics | `secrets_in_dotfiles` | int | ~/.aws/credentials, ~/.ssh/id_*, ~/.netrc count | per-user | per-user | Planned |
+
+Heavy lists (`apps.installed`, planned `browser_extensions`) ship on a 24-hour cadence; everything else flows on every snapshot. Lists are capped at 1000 entries with a `…and N more` sentinel.
+
+Other planned work outside the per-check table: server-side inventory search (`GET /v1/devices?app=<name>` to find every device running a given app or version); persisted inventory-cadence state so daemon restarts don't re-collect on every boot; opt-in username hashing in `CollectionConfig` for shared admin consoles.
 
 ## Compliance evaluation
 
@@ -116,11 +135,17 @@ The CLI and admin UI evaluate checks against default thresholds:
 | Firewall | must be enabled | Pass / Fail |
 | Screen lock password | must be required | Pass / Fail |
 | Login password | must be set | Pass / Fail |
+| Auto security-update | must be enabled | Pass / Fail |
 | Screen lock timeout | must be ≤ 15 minutes | Pass / Fail |
 | Password min length | must be ≥ 8 characters | Pass / Fail |
+| MDM enrollment | preferred when present | Pass / — |
+| MDM-managed screen lock | preferred when present | Pass / — |
 | EDR/AV presence | should be present | Pass / Warning |
-| Local admin | user should not be admin | Pass / Warning |
-| MDM enrollment | informational | — |
+| Local admin (current user) | user should not be admin | Pass / Warning |
+| SSH authorized key count | warn if any keys present | Pass / Warning |
+| SSH daemon enabled | informational | — |
+| Local users / admins roster | informational | — |
+| Installed apps | informational | — |
 
 ## API
 
@@ -198,7 +223,7 @@ npm run db:generate         # generate migration from schema changes
 ```bash
 cd agent
 cargo build
-cargo test                  # run tests (119 tests)
+cargo test                  # run tests (195 tests)
 ```
 
 ### Demo data
