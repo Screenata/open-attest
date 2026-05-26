@@ -1,0 +1,25 @@
+[package]
+name = "open-attest-updater"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+open-attest-types = { path = "../types" }
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+ed25519-dalek = { version = "2", features = ["std"] }
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+rand = "0.8"
+tiny_http = "0.12"
+hex = "0.4"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["std"] }
+chrono = { version = "0.4", features = ["serde"] }
+

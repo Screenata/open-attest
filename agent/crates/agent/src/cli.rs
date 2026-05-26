@@ -34,4 +34,12 @@ pub enum Commands {
     Daemon,
     /// Open the admin UI in the default browser
     Web,
+    /// Check for and apply a pending update (one-shot). The daemon does this
+    /// automatically; this subcommand is for manual / MDM-driven triggers.
+    Update {
+        /// Bypass rate-limit and "already at this version" checks. Signature
+        /// verification is never bypassed.
+        #[arg(long)]
+        force: bool,
+    },
 }

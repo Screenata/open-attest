@@ -16,6 +16,13 @@ function agentToDevice(a: AgentRow) {
     status: a.status,
     enrolled_at: a.enrolledAt,
     last_seen_at: a.lastSeenAt,
+    // Updater visibility — admin UI uses these to render version + controls.
+    current_version: a.currentVersion,
+    target_triple: a.targetTriple,
+    target_version: a.targetVersion,
+    update_channel: a.updateChannel,
+    last_update_attempt_at: a.lastUpdateAttemptAt,
+    last_update_failure: a.lastUpdateFailure,
   };
 }
 

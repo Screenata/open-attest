@@ -1,0 +1,16 @@
+[package]
+name = "sign-release"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sign-release"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+rand = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+anyhow = "1"

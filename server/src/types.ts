@@ -44,7 +44,12 @@ export type AttestationPayload = {
   schema_version: string;
   attestation_id: string;
   collected_at: string;
-  agent: { name: string; version: string; agent_id: string };
+  agent: {
+    name: string;
+    version: string;
+    agent_id: string;
+    target_triple?: string;  // 0.6.0+ agents only
+  };
   device: {
     device_id: string;
     hostname: string;
@@ -55,6 +60,24 @@ export type AttestationPayload = {
   user?: { username?: string; email?: string };
   checks: CheckResult[];
 };
+
+export type UpdateOffer = {
+  version: string;
+  target_triple: string;
+  url: string;
+  sig_url: string;
+  sha256: string;
+  force: boolean;
+  min_dwell_seconds: number;
+};
+
+/// Parsed shape of `releases.assets_json` — keyed by Rust target triple.
+export type ReleaseAssets = Record<
+  string,
+  { url: string; sig_url: string; sha256: string }
+>;
+
+export type UpdateChannel = 'stable' | 'beta' | 'paused';
 
 export type HeartbeatPayload = {
   device_id: string;

@@ -1,7 +1,17 @@
 import { authenticateAgent, authenticateAdmin } from '../auth';
 import { apiError } from '../errors';
-import { createDb, insertAttestation, upsertDeviceCheck, getAttestation, updateLastSeen, updateAgentDeviceInfo } from '../db';
+import {
+  createDb,
+  insertAttestation,
+  upsertDeviceCheck,
+  getAttestation,
+  updateLastSeen,
+  updateAgentDeviceInfo,
+  recordAgentVersion,
+  getAgent,
+} from '../db';
 import { AttestationPayload, Env } from '../types';
+import { offerForAgent } from '../offer';
 
 export async function handlePostAttestation(request: Request, env: Env): Promise<Response> {
   const rawBody = await request.arrayBuffer();
@@ -70,6 +80,25 @@ export async function handlePostAttestation(request: Request, env: Env): Promise
     });
   }
 
+  // Persist updater-relevant fields. version/target_triple come from the
+  // agent payload — server is the source of truth for what each device
+  // reports it's running.
+  const reportedVersion = payload.agent?.version?.trim();
+  const reportedTriple = payload.agent?.target_triple?.trim();
+  const versionFields: { currentVersion?: string; targetTriple?: string } = {};
+  if (reportedVersion && reportedVersion !== agent.currentVersion) {
+    versionFields.currentVersion = reportedVersion;
+  }
+  if (reportedTriple && reportedTriple !== agent.targetTriple) {
+    versionFields.targetTriple = reportedTriple;
+  }
+  if (Object.keys(versionFields).length > 0) {
+    await recordAgentVersion(db, agent.agentId, versionFields);
+  }
+
+  const refreshed = await getAgent(db, agent.agentId);
+  const updateOffer = refreshed ? await offerForAgent(db, refreshed) : null;
+
   return new Response(
     JSON.stringify({
       ok: true,
@@ -77,6 +106,7 @@ export async function handlePostAttestation(request: Request, env: Env): Promise
         snapshot_interval_seconds: 3600,
         heartbeat_interval_seconds: 300,
       },
+      ...(updateOffer ? { update_offer: updateOffer } : {}),
     }),
     {
       status: 200,

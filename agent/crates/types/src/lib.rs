@@ -48,6 +48,10 @@ pub struct AgentInfo {
     pub name: String,
     pub version: String,
     pub agent_id: String,
+    /// Rust target triple of the running binary, e.g. "aarch64-apple-darwin".
+    /// Used by the server to pick the correct update artifact for this device.
+    #[serde(default)]
+    pub target_triple: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -97,6 +101,32 @@ pub struct HeartbeatPayload {
 pub struct ServerResponse {
     pub ok: bool,
     pub config: Option<CollectionConfig>,
+    /// Present when the server has an update for this device.
+    /// Servers that don't support updates simply omit this field.
+    #[serde(default)]
+    pub update_offer: Option<UpdateOffer>,
+}
+
+/// Update available for this device. Attached to attestation/heartbeat responses
+/// when the server determines the agent should upgrade.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UpdateOffer {
+    /// Semver, e.g. "0.6.0".
+    pub version: String,
+    /// Rust target triple, e.g. "aarch64-apple-darwin".
+    pub target_triple: String,
+    /// URL to the raw signed binary.
+    pub url: String,
+    /// URL to the hex-encoded Ed25519 signature companion file.
+    pub sig_url: String,
+    /// Lowercase hex SHA-256 of the binary.
+    pub sha256: String,
+    /// If true, bypass rate-limit and "already at version" checks.
+    /// Signature verification is never bypassed.
+    pub force: bool,
+    /// Minimum seconds since the previous update attempt before this one
+    /// should be considered. 0 means no dwell required.
+    pub min_dwell_seconds: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -167,6 +197,7 @@ mod tests {
                 name: "open-attest".to_string(),
                 version: "0.1.0".to_string(),
                 agent_id: "agent-1".to_string(),
+                target_triple: "aarch64-apple-darwin".to_string(),
             },
             device: DeviceInfo {
                 device_id: "device-1".to_string(),
@@ -195,6 +226,56 @@ mod tests {
         assert_eq!(parsed.schema_version, "1.0");
         assert_eq!(parsed.checks.len(), 1);
         assert_eq!(parsed.checks[0].key, "disk.encryption");
+    }
+
+    #[test]
+    fn server_response_without_update_offer_deserializes() {
+        // Old servers omit the field entirely. Should deserialize cleanly.
+        let json = r#"{"ok":true}"#;
+        let resp: ServerResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.ok);
+        assert!(resp.update_offer.is_none());
+    }
+
+    #[test]
+    fn server_response_with_update_offer_roundtrip() {
+        let offer = UpdateOffer {
+            version: "0.6.0".to_string(),
+            target_triple: "aarch64-apple-darwin".to_string(),
+            url: "https://github.com/screenata/open-attest/releases/download/v0.6.0/open-attest-0.6.0-aarch64-apple-darwin".to_string(),
+            sig_url: "https://github.com/screenata/open-attest/releases/download/v0.6.0/open-attest-0.6.0-aarch64-apple-darwin.sig".to_string(),
+            sha256: "abc123".to_string(),
+            force: false,
+            min_dwell_seconds: 0,
+        };
+        let resp = ServerResponse {
+            ok: true,
+            config: None,
+            update_offer: Some(offer.clone()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: ServerResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.update_offer.unwrap(), offer);
+    }
+
+    #[test]
+    fn agent_info_target_triple_round_trips() {
+        let info = AgentInfo {
+            name: "open-attest".to_string(),
+            version: "0.6.0".to_string(),
+            agent_id: "agent-1".to_string(),
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"target_triple\":\"x86_64-unknown-linux-gnu\""));
+    }
+
+    #[test]
+    fn agent_info_missing_target_triple_defaults_empty() {
+        // Old clients sending payloads without target_triple still deserialize.
+        let json = r#"{"name":"open-attest","version":"0.5.0","agent_id":"a"}"#;
+        let info: AgentInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.target_triple, "");
     }
 
     #[test]

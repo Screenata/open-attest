@@ -27,7 +27,23 @@ CREATE TABLE IF NOT EXISTS agents (
   hardware_uuid TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
-  last_seen_at TEXT
+  last_seen_at TEXT,
+  current_version TEXT,
+  target_triple TEXT,
+  target_version TEXT,
+  update_channel TEXT NOT NULL DEFAULT 'stable',
+  last_update_attempt_at TEXT,
+  last_update_failure TEXT
+);
+
+CREATE TABLE IF NOT EXISTS releases (
+  version TEXT PRIMARY KEY,
+  channel TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  rollout_percent INTEGER DEFAULT 100 NOT NULL,
+  notes TEXT,
+  assets_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS attestations (

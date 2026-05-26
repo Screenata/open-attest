@@ -4,8 +4,8 @@ use std::process::Command;
 const TASK_NAME: &str = "OpenAttestAgent";
 
 fn agent_binary_path() -> Result<String> {
-    std::env::current_exe()
-        .context("Could not determine agent binary path")
+    open_attest_config::managed_binary_path()
+        .context("Could not determine managed binary path")
         .map(|p| p.to_string_lossy().to_string())
 }
 

@@ -14,8 +14,10 @@ fn plist_path() -> Result<PathBuf> {
 }
 
 fn agent_binary_path() -> Result<String> {
-    std::env::current_exe()
-        .context("Could not determine agent binary path")
+    // Always point the plist at the managed binary so updates that swap
+    // the file in place are picked up on the next supervisor relaunch.
+    open_attest_config::managed_binary_path()
+        .context("Could not determine managed binary path")
         .map(|p| p.to_string_lossy().to_string())
 }
 

@@ -34,6 +34,44 @@ pub fn exists() -> Result<bool> {
     Ok(config_path()?.exists())
 }
 
+/// Where the managed agent binary lives. Set by 0.6.0+ installers.
+/// Pre-0.6.0 installs at `/usr/local/bin/` won't match this path and
+/// will be refused by the updater's binary-not-managed guard.
+///
+///   macOS:   ~/Library/Application Support/open-attest/bin/
+///   Linux:   ~/.local/bin/                  (single binary, no subdir)
+///   Windows: %LOCALAPPDATA%\open-attest\bin\
+pub fn bin_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let home = dirs::home_dir().context("Could not determine home directory")?;
+        Ok(home.join(".local").join("bin"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(config_dir()?.join("bin"))
+    }
+}
+
+/// Full path to the managed binary (including the `.exe` suffix on Windows).
+pub fn managed_binary_path() -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(bin_dir()?.join("open-attest.exe"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(bin_dir()?.join("open-attest"))
+    }
+}
+
+/// Where the updater stores its persistent state and partial downloads.
+/// Currently the same as `config_dir()` — kept as a separate function so
+/// future moves (e.g. to a cache dir) don't ripple through the codebase.
+pub fn state_dir() -> Result<PathBuf> {
+    config_dir()
+}
+
 /// Load config from disk.
 pub fn load() -> Result<AgentConfig> {
     let path = config_path()?;
@@ -92,6 +130,35 @@ mod tests {
     fn config_dir_exists() {
         let dir = config_dir().unwrap();
         assert!(dir.to_str().unwrap().contains("open-attest"));
+    }
+
+    #[test]
+    fn managed_binary_path_is_under_bin_dir() {
+        let bin = bin_dir().unwrap();
+        let mgr = managed_binary_path().unwrap();
+        assert!(mgr.starts_with(&bin));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_bin_dir_under_app_support() {
+        let bin = bin_dir().unwrap();
+        let s = bin.to_string_lossy();
+        assert!(s.contains("Application Support/open-attest/bin"), "got {s}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bin_dir_is_local_bin() {
+        let bin = bin_dir().unwrap();
+        assert!(bin.ends_with(".local/bin"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_managed_binary_has_exe() {
+        let mgr = managed_binary_path().unwrap();
+        assert_eq!(mgr.extension().unwrap_or_default(), "exe");
     }
 
     #[test]

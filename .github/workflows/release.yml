@@ -11,6 +11,7 @@ jobs:
   build-macos:
     name: Build macOS (${{ matrix.target }})
     runs-on: macos-latest
+    environment: PROD
     strategy:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
@@ -27,25 +28,72 @@ jobs:
         working-directory: agent
       - run: cargo test
         working-directory: agent
+      - name: Build sign-release tool
+        run: cargo build --release -p sign-release
+        working-directory: tools/sign-release
+      - name: Sign raw binary
+        env:
+          RELEASE_PRIVKEY: ${{ secrets.RELEASE_PRIVKEY }}
+        run: |
+          if [ -z "${RELEASE_PRIVKEY:-}" ]; then
+            echo "::error::RELEASE_PRIVKEY secret is empty. Check Settings → Environments → PROD → Secrets."
+            exit 1
+          fi
+          VERSION=${GITHUB_REF_NAME#v}
+          ASSET="open-attest-${VERSION}-${{ matrix.target }}"
+          cp "agent/target/${{ matrix.target }}/release/open-attest" "$ASSET"
+          ./tools/sign-release/target/release/sign-release sign \
+            --input "$ASSET" --out "${ASSET}.sig"
+          ./tools/sign-release/target/release/sign-release verify \
+            --pubkey agent/release_pubkey.bin --input "$ASSET" --sig "${ASSET}.sig"
       - name: Package .pkg
         run: |
           ARCH_SHORT=$(echo "${{ matrix.target }}" | sed 's/-apple-darwin//')
           VERSION=${GITHUB_REF_NAME#v}
 
           BUILD_DIR=$(mktemp -d)
+          # Stage the binary at /usr/local/bin/open-attest.staged so postinstall
+          # can move it to the per-user managed path.
           mkdir -p "$BUILD_DIR/payload/usr/local/bin"
-          cp agent/target/${{ matrix.target }}/release/open-attest "$BUILD_DIR/payload/usr/local/bin/open-attest"
-          chmod 755 "$BUILD_DIR/payload/usr/local/bin/open-attest"
+          cp "agent/target/${{ matrix.target }}/release/open-attest" \
+             "$BUILD_DIR/payload/usr/local/bin/open-attest.staged"
+          chmod 755 "$BUILD_DIR/payload/usr/local/bin/open-attest.staged"
 
           mkdir -p "$BUILD_DIR/scripts"
+          # Postinstall: move staged binary to user-home managed path,
+          # chown to logged-in user, drop the staged copy.
           cat > "$BUILD_DIR/scripts/postinstall" << 'EOF'
           #!/bin/bash
+          set -e
+          INSTALL_USER=$(stat -f "%Su" /dev/console)
+          USER_HOME=$(eval echo "~$INSTALL_USER")
+          USER_BASE="$USER_HOME/Library/Application Support/open-attest"
+          USER_BIN="$USER_BASE/bin"
+
+          mkdir -p "$USER_BIN"
+          mv /usr/local/bin/open-attest.staged "$USER_BIN/open-attest"
+          chown -R "$INSTALL_USER:staff" "$USER_BASE"
+          chmod 755 "$USER_BIN/open-attest"
+
           echo ""
-          echo "open-attest installed to /usr/local/bin/open-attest"
-          echo "To complete setup: open-attest enroll --token <TOKEN> --server <URL>"
+          echo "open-attest installed to $USER_BIN/open-attest"
+          echo "To complete setup, run as $INSTALL_USER:"
+          echo "  \"$USER_BIN/open-attest\" enroll --token <TOKEN> --server <URL>"
           echo ""
           EOF
           chmod 755 "$BUILD_DIR/scripts/postinstall"
+
+          # Preinstall: uninstall a prior user-level install if present.
+          cat > "$BUILD_DIR/scripts/preinstall" << 'EOF'
+          #!/bin/bash
+          INSTALL_USER=$(stat -f "%Su" /dev/console)
+          USER_HOME=$(eval echo "~$INSTALL_USER")
+          USER_BIN="$USER_HOME/Library/Application Support/open-attest/bin/open-attest"
+          if [ -x "$USER_BIN" ]; then
+              su "$INSTALL_USER" -c "\"$USER_BIN\" uninstall" 2>/dev/null || true
+          fi
+          EOF
+          chmod 755 "$BUILD_DIR/scripts/preinstall"
 
           pkgbuild \
             --root "$BUILD_DIR/payload" \
@@ -59,11 +107,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.target }}
-          path: "*.pkg"
+          path: |
+            *.pkg
+            open-attest-*-${{ matrix.target }}
+            open-attest-*-${{ matrix.target }}.sig
 
   build-linux:
     name: Build Linux (${{ matrix.target }})
     runs-on: ubuntu-latest
+    environment: PROD
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
@@ -85,6 +137,24 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - run: cargo test
         working-directory: agent
+      - name: Build sign-release tool
+        run: cargo build --release -p sign-release
+        working-directory: tools/sign-release
+      - name: Sign raw binary
+        env:
+          RELEASE_PRIVKEY: ${{ secrets.RELEASE_PRIVKEY }}
+        run: |
+          if [ -z "${RELEASE_PRIVKEY:-}" ]; then
+            echo "::error::RELEASE_PRIVKEY secret is empty. Check Settings → Environments → PROD → Secrets."
+            exit 1
+          fi
+          VERSION=${GITHUB_REF_NAME#v}
+          ASSET="open-attest-${VERSION}-${{ matrix.target }}"
+          cp "agent/target/${{ matrix.target }}/release/open-attest" "$ASSET"
+          ./tools/sign-release/target/release/sign-release sign \
+            --input "$ASSET" --out "${ASSET}.sig"
+          ./tools/sign-release/target/release/sign-release verify \
+            --pubkey agent/release_pubkey.bin --input "$ASSET" --sig "${ASSET}.sig"
       - name: Package tarball
         run: |
           VERSION=${GITHUB_REF_NAME#v}
@@ -96,11 +166,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.target }}
-          path: "*.tar.gz"
+          path: |
+            *.tar.gz
+            open-attest-*-${{ matrix.target }}
+            open-attest-*-${{ matrix.target }}.sig
 
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+    environment: PROD
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -114,6 +188,26 @@ jobs:
         working-directory: agent
       - run: cargo test
         working-directory: agent
+      - name: Build sign-release tool
+        run: cargo build --release -p sign-release
+        working-directory: tools/sign-release
+        shell: pwsh
+      - name: Sign raw binary
+        env:
+          RELEASE_PRIVKEY: ${{ secrets.RELEASE_PRIVKEY }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrEmpty($env:RELEASE_PRIVKEY)) {
+            Write-Output "::error::RELEASE_PRIVKEY secret is empty. Check Settings -> Environments -> PROD -> Secrets."
+            exit 1
+          }
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $asset = "open-attest-$version-x86_64-pc-windows-msvc.exe"
+          Copy-Item "agent\target\x86_64-pc-windows-msvc\release\open-attest.exe" $asset
+          .\tools\sign-release\target\release\sign-release.exe sign `
+            --input $asset --out "$asset.sig"
+          .\tools\sign-release\target\release\sign-release.exe verify `
+            --pubkey agent\release_pubkey.bin --input $asset --sig "$asset.sig"
       - name: Package installer
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
@@ -161,7 +255,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x86_64
-          path: "*.exe"
+          path: |
+            *.exe
+            open-attest-*-x86_64-pc-windows-msvc.exe.sig
 
   release:
     name: Create Release
@@ -179,6 +275,15 @@ jobs:
           files: |
             artifacts/macos-x86_64-apple-darwin/*.pkg
             artifacts/macos-aarch64-apple-darwin/*.pkg
+            artifacts/macos-x86_64-apple-darwin/open-attest-*-x86_64-apple-darwin
+            artifacts/macos-x86_64-apple-darwin/open-attest-*-x86_64-apple-darwin.sig
+            artifacts/macos-aarch64-apple-darwin/open-attest-*-aarch64-apple-darwin
+            artifacts/macos-aarch64-apple-darwin/open-attest-*-aarch64-apple-darwin.sig
             artifacts/linux-x86_64-unknown-linux-gnu/*.tar.gz
             artifacts/linux-aarch64-unknown-linux-gnu/*.tar.gz
+            artifacts/linux-x86_64-unknown-linux-gnu/open-attest-*-x86_64-unknown-linux-gnu
+            artifacts/linux-x86_64-unknown-linux-gnu/open-attest-*-x86_64-unknown-linux-gnu.sig
+            artifacts/linux-aarch64-unknown-linux-gnu/open-attest-*-aarch64-unknown-linux-gnu
+            artifacts/linux-aarch64-unknown-linux-gnu/open-attest-*-aarch64-unknown-linux-gnu.sig
             artifacts/windows-x86_64/*.exe
+            artifacts/windows-x86_64/open-attest-*-x86_64-pc-windows-msvc.exe.sig

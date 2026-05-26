@@ -1,5 +1,5 @@
 import { drizzle, DrizzleD1Database } from 'drizzle-orm/d1';
-import { eq, gt, and } from 'drizzle-orm';
+import { eq, gt, and, sql } from 'drizzle-orm';
 import * as schema from './schema';
 
 export type DB = DrizzleD1Database<typeof schema>;
@@ -201,4 +201,90 @@ export async function rekeyAgent(db: DB, agentId: string, newPublicKey: string, 
 
 export async function getAdminApiKey(db: DB, keyHash: string) {
   return db.select().from(schema.adminApiKeys).where(eq(schema.adminApiKeys.keyHash, keyHash)).get();
+}
+
+// --- Releases ---
+
+export async function listReleases(db: DB) {
+  return db.select().from(schema.releases).all();
+}
+
+export async function getRelease(db: DB, version: string) {
+  return db.select().from(schema.releases).where(eq(schema.releases.version, version)).get();
+}
+
+export async function upsertRelease(
+  db: DB,
+  release: {
+    version: string;
+    channel: 'stable' | 'beta';
+    publishedAt: string;
+    rolloutPercent?: number;
+    notes?: string | null;
+    assetsJson: string;
+  },
+) {
+  await db
+    .insert(schema.releases)
+    .values({
+      version: release.version,
+      channel: release.channel,
+      publishedAt: release.publishedAt,
+      rolloutPercent: release.rolloutPercent ?? 100,
+      notes: release.notes ?? null,
+      assetsJson: release.assetsJson,
+    })
+    .onConflictDoUpdate({
+      target: schema.releases.version,
+      // Refresh fields that can change between polls. We do not overwrite
+      // `rolloutPercent` here — admins control that out-of-band and a poll
+      // must not stomp their setting.
+      set: {
+        channel: release.channel,
+        publishedAt: release.publishedAt,
+        notes: release.notes ?? null,
+        assetsJson: release.assetsJson,
+        fetchedAt: sql`(datetime('now'))`,
+      },
+    });
+}
+
+export async function setReleaseRollout(db: DB, version: string, percent: number) {
+  await db
+    .update(schema.releases)
+    .set({ rolloutPercent: percent })
+    .where(eq(schema.releases.version, version));
+}
+
+export async function deleteRelease(db: DB, version: string) {
+  await db.delete(schema.releases).where(eq(schema.releases.version, version));
+}
+
+// --- Per-device update fields ---
+
+export async function recordAgentVersion(
+  db: DB,
+  agentId: string,
+  fields: { currentVersion?: string; targetTriple?: string },
+) {
+  const set: Record<string, string> = {};
+  if (fields.currentVersion !== undefined) set.currentVersion = fields.currentVersion;
+  if (fields.targetTriple !== undefined) set.targetTriple = fields.targetTriple;
+  if (Object.keys(set).length === 0) return;
+  await db.update(schema.agents).set(set).where(eq(schema.agents.agentId, agentId));
+}
+
+export async function setAgentUpdateControls(
+  db: DB,
+  agentId: string,
+  fields: {
+    targetVersion?: string | null;
+    updateChannel?: 'stable' | 'beta' | 'paused';
+  },
+) {
+  const set: Record<string, string | null> = {};
+  if (fields.targetVersion !== undefined) set.targetVersion = fields.targetVersion;
+  if (fields.updateChannel !== undefined) set.updateChannel = fields.updateChannel;
+  if (Object.keys(set).length === 0) return;
+  await db.update(schema.agents).set(set).where(eq(schema.agents.agentId, agentId));
 }

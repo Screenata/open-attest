@@ -1,7 +1,8 @@
 import { authenticateAgent } from '../auth';
 import { apiError } from '../errors';
-import { createDb, updateLastSeen } from '../db';
+import { createDb, updateLastSeen, getAgent } from '../db';
 import { HeartbeatPayload, Env } from '../types';
+import { offerForAgent } from '../offer';
 
 export async function handleHeartbeat(request: Request, env: Env): Promise<Response> {
   const rawBody = await request.arrayBuffer();
@@ -28,6 +29,11 @@ export async function handleHeartbeat(request: Request, env: Env): Promise<Respo
 
   await updateLastSeen(db, agent.agentId, payload.timestamp);
 
+  // Re-read the agent row after the last-seen update so the offer logic
+  // sees the freshest pin/channel values.
+  const refreshed = await getAgent(db, agent.agentId);
+  const updateOffer = refreshed ? await offerForAgent(db, refreshed) : null;
+
   return new Response(
     JSON.stringify({
       ok: true,
@@ -35,6 +41,7 @@ export async function handleHeartbeat(request: Request, env: Env): Promise<Respo
         snapshot_interval_seconds: 3600,
         heartbeat_interval_seconds: 300,
       },
+      ...(updateOffer ? { update_offer: updateOffer } : {}),
     }),
     {
       status: 200,
