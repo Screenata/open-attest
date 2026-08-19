@@ -560,6 +560,21 @@ fn handle_update_offer(
     };
     match open_attest_updater::check_and_apply(&offer, ctx) {
         Ok(open_attest_updater::UpdateOutcome::Installed { version }) => {
+            // Windows has no supervisor for the ONLOGON task, so the daemon
+            // may only exit once a restart is actually booked. If booking it
+            // fails, keep running the old code — the swapped binary still
+            // takes effect at the next logon.
+            #[cfg(target_os = "windows")]
+            if let Err(e) = winsvc::schedule_restart() {
+                eprintln!(
+                    "[{}] Update to {} installed but scheduling the restart failed: {:#}; \
+                     staying up, the new binary takes effect at next logon",
+                    now_iso(),
+                    version,
+                    e
+                );
+                return false;
+            }
             eprintln!(
                 "[{}] Update to {} installed; exiting for supervisor restart",
                 now_iso(),

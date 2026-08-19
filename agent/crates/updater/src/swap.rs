@@ -1,8 +1,9 @@
 //! Binary swap and rollback operations.
 //!
-//! Unix path: atomic same-filesystem rename, with copy+rename fallback
-//! across filesystems (EXDEV). Windows path is stubbed for v1 — phase 7
-//! adds the helper-task swap.
+//! Atomic same-filesystem rename, with copy+rename fallback across
+//! filesystems (EXDEV). The same path works on Windows: a running .exe is
+//! locked against writes and deletes, but *renaming* it is allowed, so the
+//! current binary can always be moved aside to make room for the new one.
 
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -86,13 +87,14 @@ pub fn make_executable(path: &Path) -> Result<()> {
 /// Performs the binary swap: current binary → `.prev`, new binary → managed
 /// path.
 ///
-/// On Unix this is two `replace_atomically` calls — the running process can
-/// keep executing the old inode while the new file takes its place.
-///
-/// On Windows the running .exe is file-locked so we can't replace it
-/// in-process. Instead we stage the verified binary as `bin_path.new` next
-/// to it, then register a one-shot scheduled task that runs ~1 minute out
-/// to do the moves and re-trigger the main task once the daemon has exited.
+/// Two `replace_atomically` calls. On Unix the running process keeps
+/// executing the old inode while the new file takes its place. On Windows
+/// the running .exe is file-locked against writes and deletes, but a rename
+/// within the same volume succeeds even while the image is mapped — so
+/// moving it to `.prev` frees the managed path for the new binary. Either
+/// way the new code takes effect on the next daemon start; on Windows the
+/// caller is responsible for scheduling that restart (see
+/// `winsvc::schedule_restart`), since the ONLOGON task has no supervisor.
 pub fn install_swap(new_binary: &Path, bin_path: &Path) -> Result<()> {
     if !new_binary.exists() {
         bail!("new binary missing: {}", new_binary.display());
@@ -104,97 +106,13 @@ pub fn install_swap(new_binary: &Path, bin_path: &Path) -> Result<()> {
         );
     }
 
-    #[cfg(windows)]
-    {
-        install_swap_windows(new_binary, bin_path)
-    }
+    let prev = prev_path(bin_path);
+    // Remove any stale .prev from a prior aborted swap.
+    let _ = fs::remove_file(&prev);
 
-    #[cfg(not(windows))]
-    {
-        let prev = prev_path(bin_path);
-        // Remove any stale .prev from a prior aborted swap.
-        let _ = fs::remove_file(&prev);
-
-        replace_atomically(bin_path, &prev)
-            .with_context(|| "move current binary to .prev")?;
-        replace_atomically(new_binary, bin_path)
-            .with_context(|| "move new binary into place")?;
-        make_executable(bin_path)?;
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn install_swap_windows(new_binary: &Path, bin_path: &Path) -> Result<()> {
-    use chrono::{Duration as ChronoDuration, Local};
-    use std::process::Command;
-
-    // Names must stay in sync with the main scheduled task created in
-    // `agent::winsvc::install_task` ("OpenAttestAgent"). If you rename
-    // there, rename here too. The swap task is a transient one-shot and
-    // we always (re)create it with /F to overwrite.
-    const MAIN_TASK_NAME: &str = "OpenAttestAgent";
-    const SWAP_TASK_NAME: &str = "OpenAttestAgentSwap";
-
-    let new_path = append_ext(bin_path, "new");
-    let _ = fs::remove_file(&new_path);
-    replace_atomically(new_binary, &new_path)
-        .with_context(|| "stage new binary at .new")?;
-
-    // schtasks /ST accepts HH:MM (and HH:MM:SS in modern Windows). Round
-    // up to the next whole minute so the task scheduler accepts the time
-    // unconditionally — Windows refuses past-or-now triggers.
-    let trigger_at = Local::now() + ChronoDuration::seconds(75);
-    let start_time = trigger_at.format("%H:%M").to_string();
-    let start_date = trigger_at.format("%m/%d/%Y").to_string();
-
-    let bin_str = bin_path.to_string_lossy().into_owned();
-    let prev_str = prev_path(bin_path).to_string_lossy().into_owned();
-    let new_str = new_path.to_string_lossy().into_owned();
-
-    // The helper command:
-    //   1. Move current -> .prev (replace stale if present)
-    //   2. Move .new    -> current
-    //   3. Re-trigger the main task so the daemon comes back on the new binary.
-    //   4. Best-effort delete this helper task.
-    let helper_cmd = format!(
-        "del /F /Q \"{prev}\" 2>nul & \
-         move /Y \"{bin}\" \"{prev}\" && \
-         move /Y \"{new}\" \"{bin}\" && \
-         schtasks /Run /TN \"{main}\" & \
-         schtasks /Delete /TN \"{swap}\" /F",
-        prev = prev_str,
-        bin = bin_str,
-        new = new_str,
-        main = MAIN_TASK_NAME,
-        swap = SWAP_TASK_NAME,
-    );
-
-    // /SC ONCE /SD /ST gives us a single fire at the chosen wall time. /F
-    // overwrites any leftover swap task from a previous attempt.
-    let status = Command::new("schtasks")
-        .args([
-            "/Create",
-            "/TN",
-            SWAP_TASK_NAME,
-            "/TR",
-            &format!("cmd /c {}", helper_cmd),
-            "/SC",
-            "ONCE",
-            "/SD",
-            &start_date,
-            "/ST",
-            &start_time,
-            "/RL",
-            "HIGHEST",
-            "/F",
-        ])
-        .status()
-        .context("schtasks /Create failed to launch")?;
-    if !status.success() {
-        bail!("schtasks /Create returned non-zero exit code");
-    }
-
+    replace_atomically(bin_path, &prev).with_context(|| "move current binary to .prev")?;
+    replace_atomically(new_binary, bin_path).with_context(|| "move new binary into place")?;
+    make_executable(bin_path)?;
     Ok(())
 }
 
@@ -271,7 +189,6 @@ mod tests {
         assert!(replace_atomically(&src, &dst).is_err());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn install_swap_creates_prev_and_replaces_current() {
         let dir = tempdir().unwrap();
@@ -286,7 +203,6 @@ mod tests {
         assert!(!new_bin.exists());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn install_swap_overwrites_stale_prev() {
         let dir = tempdir().unwrap();
@@ -301,7 +217,6 @@ mod tests {
         assert_eq!(fs::read(&prev_path(&bin)).unwrap(), b"v0.5.0");
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn rollback_restores_prev_over_current() {
         let dir = tempdir().unwrap();
@@ -316,7 +231,6 @@ mod tests {
         assert!(!prev_path(&bin).exists());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn rollback_returns_false_without_prev() {
         let dir = tempdir().unwrap();
