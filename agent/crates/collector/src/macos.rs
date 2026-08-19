@@ -16,9 +16,30 @@ pub mod parsers {
         output.contains("FileVault is On")
     }
 
-    pub fn parse_firewall(output: &str) -> bool {
+    pub fn parse_firewall(output: &str) -> Option<bool> {
         let trimmed = output.trim();
-        matches!(trimmed, "1" | "2")
+
+        // Legacy `defaults read ... globalstate` output is just the numeric state.
+        let state = if matches!(trimmed, "0" | "1" | "2") {
+            trimmed.parse::<u8>().ok()
+        } else {
+            // `socketfilterfw --getglobalstate` prints, for example:
+            // "Firewall is enabled. (State = 1)"
+            trimmed.split_once("State =").and_then(|(_, rest)| {
+                let value: String = rest
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                value.parse::<u8>().ok()
+            })
+        };
+
+        match state {
+            Some(0) => Some(false),
+            Some(1 | 2) => Some(true),
+            _ => None,
+        }
     }
 
     /// Sentinel meaning "no lock will ever trigger" (display never sleeps and screensaver never kicks in).
@@ -347,19 +368,34 @@ fn check_disk_encryption() -> CheckResult {
 
 #[cfg(target_os = "macos")]
 fn check_firewall() -> CheckResult {
-    let (output, source) = match Command::new("defaults")
-        .args(["read", "/Library/Preferences/com.apple.alf", "globalstate"])
+    let socketfilterfw_state = Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
+        .arg("--getglobalstate")
+        .stderr(std::process::Stdio::null())
         .output()
-    {
-        Ok(out) if out.status.success() => (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            "defaults_read",
-        ),
-        _ => (String::new(), "unavailable"),
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| parsers::parse_firewall(&String::from_utf8_lossy(&out.stdout)));
+
+    let (enabled, source) = match socketfilterfw_state {
+        Some(enabled) => (enabled, "socketfilterfw"),
+        None => {
+            let defaults_state = Command::new("defaults")
+                .args(["read", "/Library/Preferences/com.apple.alf", "globalstate"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| parsers::parse_firewall(&String::from_utf8_lossy(&out.stdout)));
+
+            match defaults_state {
+                Some(enabled) => (enabled, "defaults_read"),
+                None => (false, "unavailable"),
+            }
+        }
     };
     CheckResult {
         key: "firewall.enabled".to_string(),
-        value: CheckValue::Bool(parsers::parse_firewall(&output)),
+        value: CheckValue::Bool(enabled),
         observed_at: now_iso(),
         source: source.to_string(),
     }
@@ -787,9 +823,31 @@ mod tests {
     #[test]
     fn parse_fdesetup_off() { assert!(!parse_disk_encryption("FileVault is Off.")); }
     #[test]
-    fn parse_firewall_enabled() { assert!(parse_firewall("1\n")); assert!(parse_firewall("2\n")); }
+    fn parse_firewall_enabled() {
+        assert_eq!(
+            parse_firewall("Firewall is enabled. (State = 1)\n"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_firewall("Firewall is enabled. (State = 2)\n"),
+            Some(true)
+        );
+        assert_eq!(parse_firewall("1\n"), Some(true));
+        assert_eq!(parse_firewall("2\n"), Some(true));
+    }
     #[test]
-    fn parse_firewall_disabled() { assert!(!parse_firewall("0\n")); }
+    fn parse_firewall_disabled() {
+        assert_eq!(
+            parse_firewall("Firewall is disabled. (State = 0)\n"),
+            Some(false)
+        );
+        assert_eq!(parse_firewall("0\n"), Some(false));
+    }
+    #[test]
+    fn parse_firewall_unavailable() {
+        assert_eq!(parse_firewall(""), None);
+        assert_eq!(parse_firewall("unexpected output"), None);
+    }
     #[test]
     fn screensaver_idle_present() { assert_eq!(parse_screensaver_idle("300\n"), Some(300)); }
     #[test]
