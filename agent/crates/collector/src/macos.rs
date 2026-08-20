@@ -118,8 +118,21 @@ pub mod parsers {
         output.trim().to_string()
     }
 
+    /// True only when `profiles status -type enrollment` reports an active
+    /// MDM enrollment. That command prints the same "MDM enrollment:" line
+    /// either way — "No" on an unmanaged device, "Yes" or "Yes (User
+    /// Approved)" on a managed one — so the value has to be read rather than
+    /// the line merely found. DEP registration is deliberately not counted:
+    /// a device can be assigned in Apple Business Manager and still not be
+    /// enrolled in any MDM.
     pub fn parse_mdm(output: &str) -> bool {
-        output.contains("MDM enrollment")
+        output
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(key, _)| key.trim().eq_ignore_ascii_case("MDM enrollment"))
+            })
+            .is_some_and(|(_, value)| value.trim_start().to_ascii_lowercase().starts_with("yes"))
     }
 
     /// Convert a `stat -f %m` unix-epoch string to an RFC3339 UTC timestamp.
@@ -970,9 +983,32 @@ mod tests {
     #[test]
     fn parse_os_version_trim() { assert_eq!(parse_os_version("14.4.1\n"), "14.4.1"); }
     #[test]
-    fn parse_mdm_enrolled() { assert!(parse_mdm("MDM enrollment: Yes (User Approved)\nSome other line")); }
+    fn parse_mdm_enrolled() {
+        assert!(parse_mdm("Enrolled via DEP: Yes\nMDM enrollment: Yes (User Approved)"));
+        assert!(parse_mdm("Enrolled via DEP: No\nMDM enrollment: Yes"));
+    }
+
     #[test]
-    fn parse_mdm_not_enrolled() { assert!(!parse_mdm("Enrolled via DEP: No\nSomething else")); }
+    fn parse_mdm_not_enrolled() {
+        // Verbatim output from an unmanaged Mac. `profiles` prints the "MDM
+        // enrollment" line whether or not the device is enrolled, so matching
+        // on the line alone reported every Mac as managed.
+        assert!(!parse_mdm("Enrolled via DEP: No\nMDM enrollment: No"));
+    }
+
+    #[test]
+    fn parse_mdm_dep_assigned_but_not_enrolled() {
+        // Assigned in Apple Business Manager, never enrolled.
+        assert!(!parse_mdm("Enrolled via DEP: Yes\nMDM enrollment: No"));
+    }
+
+    #[test]
+    fn parse_mdm_false_when_the_command_says_nothing() {
+        // `profiles` missing or erroring leaves us with no evidence, and
+        // "unmanaged" is the safe answer for a posture signal.
+        assert!(!parse_mdm(""));
+        assert!(!parse_mdm("profiles: unrecognized option"));
+    }
     #[test]
     fn edr_crowdstrike() { assert!(parse_edr_presence("root 123 falcond\n", "")); }
     #[test]
