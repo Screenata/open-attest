@@ -15,6 +15,7 @@ use open_attest_collector::{collect_all, collect_inventory};
 use open_attest_config as config;
 use open_attest_signer::{FileKeyStore, KeyStore};
 use open_attest_types::*;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const AGENT_NAME: &str = "open-attest";
@@ -108,10 +109,153 @@ fn get_device_id() -> String {
     get_hardware_uuid().unwrap_or_else(|| uuid::Uuid::now_v7().to_string())
 }
 
+/// What the platform supervisor reports about the agent job.
+#[derive(Debug, PartialEq)]
+enum DaemonState {
+    Running { pid: Option<u32> },
+    Stopped { detail: Option<String> },
+    /// No launchd plist / systemd unit / Scheduled Task registered at all.
+    NotInstalled,
+    Unknown { reason: String },
+}
+
+impl std::fmt::Display for DaemonState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DaemonState::Running { pid: Some(pid) } => write!(f, "running (pid {pid})"),
+            DaemonState::Running { pid: None } => write!(f, "running"),
+            DaemonState::Stopped { detail: Some(d) } => write!(f, "not running: {d}"),
+            DaemonState::Stopped { detail: None } => write!(f, "not running"),
+            DaemonState::NotInstalled => write!(f, "not installed"),
+            DaemonState::Unknown { reason } => write!(f, "unknown ({reason})"),
+        }
+    }
+}
+
+fn daemon_state() -> DaemonState {
+    #[cfg(target_os = "macos")]
+    {
+        launchd::daemon_state()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        systemd::daemon_state()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        winsvc::daemon_state()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        DaemonState::Unknown {
+            reason: "unsupported platform".to_string(),
+        }
+    }
+}
+
+/// Copies `src` over `dst`, creating the parent directory. The copy lands on a
+/// sibling temp path first so an interrupted write can never leave a truncated
+/// executable at `dst`.
+fn stage_binary(src: &Path, dst: &Path) -> Result<()> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+
+    let mut tmp = dst.as_os_str().to_owned();
+    tmp.push(".incoming");
+    let tmp = PathBuf::from(tmp);
+    let _ = std::fs::remove_file(&tmp);
+
+    std::fs::copy(src, &tmp)
+        .with_context(|| format!("Failed to copy {} to {}", src.display(), tmp.display()))?;
+    // Make it executable before it is visible at the final path.
+    open_attest_updater::swap::make_executable(&tmp)?;
+    std::fs::rename(&tmp, dst)
+        .with_context(|| format!("Failed to move the binary into {}", dst.display()))?;
+    Ok(())
+}
+
+/// Makes sure the agent binary exists at the managed path, copying the running
+/// executable there if not. Every supervisor execs that path, and the updater
+/// swaps that path, but only the macOS .pkg actually puts a binary there — a
+/// raw release binary on $PATH, or the Windows installer's Program Files copy,
+/// would otherwise leave the supervisor pointed at nothing. launchd cannot
+/// exec, the job dies with exit 78 (EX_CONFIG), and no log is ever written.
+fn install_managed_binary() -> Result<PathBuf> {
+    let managed = config::managed_binary_path()?;
+    let current = std::env::current_exe().context("Could not determine the running executable")?;
+
+    // Already running from the managed path (a .pkg install, or a repair after
+    // one) — nothing to copy, and copying a file onto itself would truncate it.
+    if let (Ok(a), Ok(b)) = (
+        std::fs::canonicalize(&current),
+        std::fs::canonicalize(&managed),
+    ) {
+        if a == b {
+            return Ok(managed);
+        }
+    }
+
+    stage_binary(&current, &managed).with_context(|| {
+        format!("Failed to install the agent binary to {}", managed.display())
+    })?;
+    Ok(managed)
+}
+
+/// Installs the platform supervisor that keeps the daemon running. Shared by
+/// `enroll` and `repair`.
+fn install_supervisor() {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = launchd::install_launchd() {
+        eprintln!("Warning: Failed to install LaunchAgent: {}", e);
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(e) = systemd::install_systemd() {
+        eprintln!("Warning: Failed to install systemd user unit: {}", e);
+    }
+    #[cfg(target_os = "windows")]
+    if let Err(e) = winsvc::install_task() {
+        eprintln!("Warning: Failed to install Scheduled Task: {}", e);
+    }
+}
+
+/// Waits briefly for the supervisor to bring the daemon up, then reports what
+/// happened. Supervisors start the job asynchronously, so an immediate query
+/// races the launch.
+fn report_daemon_startup() {
+    let mut state = daemon_state();
+    for _ in 0..10 {
+        if matches!(state, DaemonState::Running { .. }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        state = daemon_state();
+    }
+
+    match state {
+        DaemonState::Running { .. } => println!("Background agent is running."),
+        other => {
+            eprintln!("Warning: the background agent is {other}.");
+            eprintln!("         No heartbeats or attestations will be sent until it starts.");
+            #[cfg(unix)]
+            eprintln!("         See /tmp/open-attest.stderr.log, then try 'open-attest repair'.");
+            #[cfg(not(unix))]
+            eprintln!("         Try 'open-attest repair'.");
+        }
+    }
+}
+
 fn do_enroll(token: String, server: String) -> Result<()> {
     if config::exists()? {
         bail!("Agent is already enrolled. Run 'open-attest uninstall' first.");
     }
+
+    // Before anything else: the supervisor installed below execs the managed
+    // path, so if the binary cannot be put there this enrollment would produce
+    // a device that reports in once and never again. Failing here leaves no
+    // server-side or on-disk state behind.
+    let managed_bin = install_managed_binary()?;
 
     let config_dir = config::config_dir()?;
     let key_path = open_attest_signer::key_path_in(&config_dir);
@@ -156,24 +300,30 @@ fn do_enroll(token: String, server: String) -> Result<()> {
 
     config::save(&agent_config).context("Failed to save config")?;
 
-    // Install platform-specific daemon
-    #[cfg(target_os = "macos")]
-    if let Err(e) = launchd::install_launchd() {
-        eprintln!("Warning: Failed to install LaunchAgent: {}", e);
-    }
-    #[cfg(target_os = "linux")]
-    if let Err(e) = systemd::install_systemd() {
-        eprintln!("Warning: Failed to install systemd user unit: {}", e);
-    }
-    #[cfg(target_os = "windows")]
-    if let Err(e) = winsvc::install_task() {
-        eprintln!("Warning: Failed to install Scheduled Task: {}", e);
-    }
+    install_supervisor();
 
     println!("Enrolled successfully!");
     println!("  Agent ID:  {}", response.agent_id);
     println!("  Key ID:    {}", response.key_id);
     println!("  Org ID:    {}", response.org_id);
+    println!("  Binary:    {}", managed_bin.display());
+    report_daemon_startup();
+    Ok(())
+}
+
+/// Re-stages the managed binary and reinstalls the supervisor. Devices
+/// enrolled by 0.8.0 and earlier are left with a supervisor pointing at a
+/// binary that was never placed, and `enroll` refuses to run on an enrolled
+/// device, so repairing that needs its own entry point.
+fn do_repair() -> Result<()> {
+    if !config::exists()? {
+        bail!("Agent is not enrolled. Run 'open-attest enroll' first.");
+    }
+
+    let managed_bin = install_managed_binary()?;
+    println!("Agent binary: {}", managed_bin.display());
+    install_supervisor();
+    report_daemon_startup();
     Ok(())
 }
 
@@ -198,6 +348,27 @@ fn do_status() -> Result<()> {
         "  Snapshot:   {}s",
         cfg.snapshot_interval_seconds
     );
+
+    // Enrollment config alone says nothing about whether the agent is alive,
+    // and "is this working?" is the question `status` is run to answer.
+    let managed_bin = config::managed_binary_path()?;
+    let binary_present = managed_bin.exists();
+    println!(
+        "  Binary:     {}{}",
+        managed_bin.display(),
+        if binary_present { "" } else { "  (MISSING)" }
+    );
+    let state = daemon_state();
+    println!("  Daemon:     {state}");
+
+    if !matches!(state, DaemonState::Running { .. }) {
+        println!();
+        println!("The background agent is not running: no heartbeats or attestations are being sent.");
+        if !binary_present {
+            println!("The managed binary is missing, which is what the supervisor tries to exec.");
+        }
+        println!("Run 'open-attest repair' to reinstall it.");
+    }
     Ok(())
 }
 
@@ -782,6 +953,7 @@ fn main() {
     let result = match cli.command {
         Commands::Enroll { token, server } => do_enroll(token, server),
         Commands::Status => do_status(),
+        Commands::Repair => do_repair(),
         Commands::Check { json } => do_check(json),
         Commands::Attest => do_attest(),
         Commands::Uninstall => do_uninstall(),
@@ -803,6 +975,59 @@ fn main() {
 mod tests {
     use super::*;
     use open_attest_types::{CheckResult, CheckValue};
+    use tempfile::tempdir;
+
+    #[test]
+    fn stage_binary_creates_missing_parent_dirs() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("open-attest");
+        let dst = dir.path().join("Application Support/open-attest/bin/open-attest");
+        std::fs::write(&src, b"agent v1").unwrap();
+
+        stage_binary(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"agent v1");
+        // Source stays put: it may be the binary the user installed on $PATH.
+        assert!(src.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_binary_makes_the_copy_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("bin").join("open-attest");
+        std::fs::write(&src, b"agent").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        stage_binary(&src, &dst).unwrap();
+        let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn stage_binary_replaces_an_older_copy() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("bin").join("open-attest");
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        std::fs::write(&dst, b"agent v1").unwrap();
+        std::fs::write(&src, b"agent v2").unwrap();
+
+        stage_binary(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"agent v2");
+        // No .incoming left behind.
+        assert!(!dir.path().join("bin").join("open-attest.incoming").exists());
+    }
+
+    #[test]
+    fn stage_binary_fails_when_source_is_missing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("nope");
+        let dst = dir.path().join("bin").join("open-attest");
+        assert!(stage_binary(&src, &dst).is_err());
+        assert!(!dst.exists());
+    }
 
     fn check(key: &str, value: CheckValue) -> CheckResult {
         CheckResult {

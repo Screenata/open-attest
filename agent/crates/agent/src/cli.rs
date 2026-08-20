@@ -20,6 +20,9 @@ pub enum Commands {
     },
     /// Show agent status
     Status,
+    /// Reinstall the managed binary and daemon supervisor for an enrolled
+    /// device whose background agent is not running
+    Repair,
     /// Run all checks and print results
     Check {
         /// Output as JSON

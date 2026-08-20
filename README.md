@@ -81,15 +81,19 @@ Employees open the enrollment link and follow the instructions, or run directly:
 open-attest enroll --token <TOKEN> --server https://your-worker.workers.dev
 ```
 
-The agent enrolls, installs a background daemon, and starts reporting automatically.
+The agent copies itself to a managed location, enrolls, installs a background
+daemon, and starts reporting automatically. `enroll` says whether the daemon
+actually came up; if it did not, `open-attest status` explains why and
+`open-attest repair` reinstalls it.
 
 ### CLI commands
 
 ```bash
 open-attest check           # show posture checks with pass/fail status
 open-attest check --json    # machine-readable JSON output
-open-attest status          # show agent enrollment status
+open-attest status          # show enrollment, managed binary, and daemon health
 open-attest attest          # submit an attestation now
+open-attest repair          # reinstall the managed binary and daemon supervisor
 open-attest web             # open admin UI in browser
 open-attest uninstall       # remove agent and daemon
 ```
