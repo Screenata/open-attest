@@ -1,3 +1,4 @@
+use crate::DaemonState;
 use anyhow::{Context, Result};
 use chrono::{Duration, Local};
 use std::process::Command;
@@ -105,4 +106,90 @@ pub fn schedule_restart() -> Result<()> {
         anyhow::bail!("schtasks /Create returned non-zero exit code");
     }
     Ok(())
+}
+
+/// Reports whether the agent daemon is actually running. The Scheduled Task's
+/// own Status field is localized, so this checks the task's existence by exit
+/// code and looks for a live process with `tasklist`, whose filter syntax is
+/// not localized.
+pub fn daemon_state() -> DaemonState {
+    match Command::new("schtasks")
+        .args(["/Query", "/TN", TASK_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => {}
+        Ok(_) => return DaemonState::NotInstalled,
+        Err(e) => {
+            return DaemonState::Unknown {
+                reason: format!("schtasks /Query: {e}"),
+            }
+        }
+    }
+
+    match Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq open-attest.exe", "/NH", "/FO", "CSV"])
+        .output()
+    {
+        Ok(o) => state_from_tasklist(&String::from_utf8_lossy(&o.stdout), std::process::id()),
+        Err(e) => DaemonState::Unknown {
+            reason: format!("tasklist: {e}"),
+        },
+    }
+}
+
+/// Picks the daemon out of `tasklist /FO CSV` output, whose rows look like
+/// `"open-attest.exe","1234","Console","1","9,000 K"`. `me` is skipped: the
+/// CLI shares an image name with the daemon, so the process running this very
+/// query would otherwise read as a live daemon.
+fn state_from_tasklist(stdout: &str, me: u32) -> DaemonState {
+    for line in stdout.lines() {
+        let pid = line
+            .split(',')
+            .nth(1)
+            .map(|f| f.trim_matches('"'))
+            .and_then(|p| p.parse::<u32>().ok());
+        if let Some(pid) = pid.filter(|p| *p != me) {
+            return DaemonState::Running { pid: Some(pid) };
+        }
+    }
+
+    DaemonState::Stopped {
+        detail: Some(
+            "the Scheduled Task is registered but no agent process is running".to_string(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_pid_of_a_running_daemon() {
+        let out = "\"open-attest.exe\",\"4242\",\"Console\",\"1\",\"9,000 K\"\n";
+        assert_eq!(
+            state_from_tasklist(out, 100),
+            DaemonState::Running { pid: Some(4242) }
+        );
+    }
+
+    #[test]
+    fn does_not_mistake_this_process_for_the_daemon() {
+        // `open-attest status` is itself an open-attest.exe.
+        let out = "\"open-attest.exe\",\"100\",\"Console\",\"1\",\"9,000 K\"\n";
+        assert!(matches!(
+            state_from_tasklist(out, 100),
+            DaemonState::Stopped { .. }
+        ));
+    }
+
+    #[test]
+    fn reports_stopped_when_no_process_matches() {
+        // What tasklist prints with /NH when the filter matches nothing.
+        let out = "INFO: No tasks are running which match the specified criteria.\n";
+        assert!(matches!(
+            state_from_tasklist(out, 100),
+            DaemonState::Stopped { .. }
+        ));
+    }
 }
