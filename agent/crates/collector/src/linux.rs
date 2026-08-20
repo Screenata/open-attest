@@ -130,7 +130,12 @@ pub mod parsers {
         uname.trim().to_string()
     }
 
-    pub fn parse_edr_presence(ps_output: &str, apparmor_exit: i32, selinux_output: &str) -> bool {
+    /// True only when an anti-malware/EDR agent process is running. AppArmor and
+    /// SELinux deliberately do not count: they are mandatory-access-control
+    /// frameworks, not anti-malware, so a stock distro with enforcement on but no
+    /// AV installed used to report true here. Their state is reported separately
+    /// as `lsm.enforcing`.
+    pub fn parse_edr_presence(ps_output: &str) -> bool {
         let known = [
             "clamd",
             "freshclam",
@@ -142,18 +147,13 @@ pub mod parsers {
             "bdagent",
             "mcafee",
         ];
-        for proc in &known {
-            if ps_output.contains(proc) {
-                return true;
-            }
-        }
-        if apparmor_exit == 0 {
-            return true;
-        }
-        if selinux_output.trim().eq_ignore_ascii_case("enforcing") {
-            return true;
-        }
-        false
+        known.iter().any(|proc| ps_output.contains(proc))
+    }
+
+    /// Whether a Linux Security Module is actively enforcing. Informational —
+    /// this is hardening posture, not malware protection.
+    pub fn parse_lsm_enforcing(apparmor_exit: i32, selinux_output: &str) -> bool {
+        apparmor_exit == 0 || selinux_output.trim().eq_ignore_ascii_case("enforcing")
     }
 
     pub fn parse_password_enabled(shadow_entry: &str, passwd_status: &str) -> bool {
@@ -541,7 +541,7 @@ fn check_user_primary() -> CheckResult {
 }
 
 #[cfg(target_os = "linux")]
-fn check_edr_presence() -> CheckResult {
+fn check_edr_presence() -> Vec<CheckResult> {
     let ps_output = Command::new("ps")
         .args(["aux"])
         .output()
@@ -560,16 +560,29 @@ fn check_edr_presence() -> CheckResult {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    CheckResult {
-        key: "edr.present".to_string(),
-        value: CheckValue::Bool(parsers::parse_edr_presence(
-            &ps_output,
-            apparmor_exit,
-            &selinux_output,
-        )),
-        observed_at: now_iso(),
-        source: "process_scan".to_string(),
-    }
+    let observed_at = now_iso();
+    let lsm_source = if apparmor_exit == 0 {
+        "apparmor"
+    } else if selinux_output.trim().eq_ignore_ascii_case("enforcing") {
+        "selinux"
+    } else {
+        "none"
+    };
+
+    vec![
+        CheckResult {
+            key: "edr.present".to_string(),
+            value: CheckValue::Bool(parsers::parse_edr_presence(&ps_output)),
+            observed_at: observed_at.clone(),
+            source: "process_scan".to_string(),
+        },
+        CheckResult {
+            key: "lsm.enforcing".to_string(),
+            value: CheckValue::Bool(parsers::parse_lsm_enforcing(apparmor_exit, &selinux_output)),
+            observed_at,
+            source: lsm_source.to_string(),
+        },
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -821,7 +834,6 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_hostname(),
         check_user_primary(),
         check_mdm(),
-        check_edr_presence(),
         check_password_enabled(),
         check_password_policy(),
         check_local_admin(),
@@ -830,6 +842,7 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_ssh_daemon_enabled(),
         check_ssh_authorized_key_count(),
     ];
+    checks.extend(check_edr_presence());
     checks.extend(check_hardware_info());
     checks
 }
@@ -960,23 +973,28 @@ mod tests {
     // --- EDR presence ---
     #[test]
     fn edr_clamd() {
-        assert!(parse_edr_presence("root 123 clamd\nuser 456 bash\n", 1, ""));
+        assert!(parse_edr_presence("root 123 clamd\nuser 456 bash\n"));
     }
     #[test]
     fn edr_falcon_sensor() {
-        assert!(parse_edr_presence("root 100 falcon-sensor\n", 1, ""));
+        assert!(parse_edr_presence("root 100 falcon-sensor\n"));
     }
     #[test]
     fn edr_apparmor() {
-        assert!(parse_edr_presence("user 123 bash\n", 0, ""));
+        // AppArmor enforcing is NOT anti-malware presence.
+        assert!(!parse_edr_presence("user 123 bash\n"));
+        assert!(parse_lsm_enforcing(0, ""));
     }
     #[test]
     fn edr_selinux_enforcing() {
-        assert!(parse_edr_presence("user 123 bash\n", 1, "Enforcing\n"));
+        // SELinux enforcing is NOT anti-malware presence.
+        assert!(!parse_edr_presence("user 123 bash\n"));
+        assert!(parse_lsm_enforcing(1, "Enforcing\n"));
     }
     #[test]
     fn edr_none() {
-        assert!(!parse_edr_presence("user 123 bash\nuser 456 vim\n", 1, "Permissive\n"));
+        assert!(!parse_edr_presence("user 123 bash\nuser 456 vim\n"));
+        assert!(!parse_lsm_enforcing(1, "Permissive\n"));
     }
 
     // --- Password enabled ---

@@ -122,18 +122,33 @@ pub mod parsers {
         output.contains("MDM enrollment")
     }
 
-    pub fn parse_edr_presence(ps_output: &str, sysext_output: &str, xprotect_exists: bool) -> bool {
-        if xprotect_exists {
-            return true;
-        }
+    /// Convert a `stat -f %m` unix-epoch string to an RFC3339 UTC timestamp.
+    /// Empty when the input is not a positive integer.
+    pub fn parse_epoch_seconds_to_iso(output: &str) -> String {
+        let secs = match output.trim().parse::<i64>() {
+            Ok(s) if s > 0 => s,
+            _ => return String::new(),
+        };
+        chrono::DateTime::from_timestamp(secs, 0)
+            .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .unwrap_or_default()
+    }
 
+    /// True only when a THIRD-PARTY anti-malware agent is running. Apple's
+    /// built-in XProtect deliberately does not count: `XProtect.bundle` ships
+    /// with every macOS install, so treating it as presence made this check
+    /// return true on every Mac — worthless as fleet-coverage evidence. A Mac
+    /// with no third-party agent now reports false, which is the honest answer;
+    /// XProtect's own state is reported separately as `edr.signature_version` /
+    /// `edr.signature_last_updated` with source `xprotect`.
+    pub fn parse_edr_presence(ps_output: &str, sysext_output: &str) -> bool {
+        // Apple's own MRT/XProtect processes are excluded for the same reason.
         let known_processes = [
             "falcond", "falcon-sensor",
             "sentineld", "sentinelone",
             "cbagentd", "cbdaemon",
             "SophosScanD", "SophosAntiVirus",
             "JamfProtect",
-            "MRT", "XProtect",
             "MalwareBytes",
             "NortonSecurity",
             "McAfeeSystemExtensions",
@@ -526,6 +541,17 @@ fn check_mdm() -> CheckResult {
     }
 }
 
+/// The XProtect bundle, whichever of the two OS locations holds it.
+#[cfg(target_os = "macos")]
+fn xprotect_bundle_path() -> Option<&'static str> {
+    [
+        "/Library/Apple/System/Library/CoreServices/XProtect.bundle",
+        "/System/Library/CoreServices/XProtect.bundle",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists())
+}
+
 #[cfg(target_os = "macos")]
 fn check_edr_presence() -> CheckResult {
     let ps_output = Command::new("ps").args(["aux"]).output()
@@ -536,16 +562,52 @@ fn check_edr_presence() -> CheckResult {
         .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
         .unwrap_or_default();
 
-    let xprotect_exists =
-        std::path::Path::new("/Library/Apple/System/Library/CoreServices/XProtect.bundle").exists()
-        || std::path::Path::new("/System/Library/CoreServices/XProtect.bundle").exists();
-
     CheckResult {
         key: "edr.present".to_string(),
-        value: CheckValue::Bool(parsers::parse_edr_presence(&ps_output, &sysext_output, xprotect_exists)),
+        value: CheckValue::Bool(parsers::parse_edr_presence(&ps_output, &sysext_output)),
         observed_at: now_iso(),
         source: "process_scan".to_string(),
     }
+}
+
+/// XProtect definition currency: the bundle's version string and the bundle
+/// mtime (Apple rewrites the bundle on every definition push, so its mtime is
+/// the definition date). Reports XProtect only — a third-party EDR's own
+/// signature state is not readable from the endpoint without vendor tooling.
+#[cfg(target_os = "macos")]
+fn check_edr_signature() -> Vec<CheckResult> {
+    let (version, last_updated) = match xprotect_bundle_path() {
+        Some(bundle) => {
+            let version_output = Command::new("defaults")
+                .args(["read", &format!("{}/Contents/Info", bundle), "CFBundleShortVersionString"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let mtime_output = Command::new("stat").args(["-f", "%m", bundle]).output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            (
+                version_output.trim().to_string(),
+                parsers::parse_epoch_seconds_to_iso(&mtime_output),
+            )
+        }
+        None => (String::new(), String::new()),
+    };
+    let observed_at = now_iso();
+    vec![
+        CheckResult {
+            key: "edr.signature_version".to_string(),
+            value: CheckValue::Str(version),
+            observed_at: observed_at.clone(),
+            source: "xprotect".to_string(),
+        },
+        CheckResult {
+            key: "edr.signature_last_updated".to_string(),
+            value: CheckValue::Str(last_updated),
+            observed_at,
+            source: "xprotect".to_string(),
+        },
+    ]
 }
 
 #[cfg(target_os = "macos")]
@@ -810,6 +872,7 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_ssh_daemon_enabled(),
         check_ssh_authorized_key_count(),
     ];
+    checks.extend(check_edr_signature());
     checks.extend(check_hardware_info());
     checks
 }
@@ -911,13 +974,34 @@ mod tests {
     #[test]
     fn parse_mdm_not_enrolled() { assert!(!parse_mdm("Enrolled via DEP: No\nSomething else")); }
     #[test]
-    fn edr_crowdstrike() { assert!(parse_edr_presence("root 123 falcond\n", "", false)); }
+    fn edr_crowdstrike() { assert!(parse_edr_presence("root 123 falcond\n", "")); }
     #[test]
-    fn edr_none() { assert!(!parse_edr_presence("user 123 bash\nuser 456 vim\n", "no extensions", false)); }
+    fn edr_none() { assert!(!parse_edr_presence("user 123 bash\nuser 456 vim\n", "no extensions")); }
     #[test]
-    fn edr_sysext() { assert!(parse_edr_presence("", "com.crowdstrike.falcon enabled", false)); }
+    fn edr_sysext() { assert!(parse_edr_presence("", "com.crowdstrike.falcon enabled")); }
     #[test]
-    fn edr_xprotect_bundle() { assert!(parse_edr_presence("", "", true)); }
+    fn epoch_to_iso_converts() {
+        assert_eq!(parse_epoch_seconds_to_iso("1755590400\n"), "2025-08-19T08:00:00Z");
+    }
+
+    #[test]
+    fn epoch_to_iso_empty_on_garbage() {
+        assert_eq!(parse_epoch_seconds_to_iso(""), "");
+        assert_eq!(parse_epoch_seconds_to_iso("stat: no such file"), "");
+        assert_eq!(parse_epoch_seconds_to_iso("0"), "");
+    }
+
+    #[test]
+    fn edr_xprotect_bundle_alone_is_not_presence() { assert!(!parse_edr_presence("", "")); }
+
+    #[test]
+    fn edr_apple_builtin_processes_are_not_presence() {
+        // XProtect/MRT run on stock macOS — they must not satisfy the check.
+        assert!(!parse_edr_presence(
+            "root 55 /usr/libexec/XProtect\nroot 61 /usr/libexec/MRT\n",
+            "no extensions"
+        ));
+    }
     #[test]
     fn admin_members_typical() { assert_eq!(parse_admin_members("GroupMembership: root tao admin\n"), vec!["root", "tao", "admin"]); }
     #[test]
