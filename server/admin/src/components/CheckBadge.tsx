@@ -9,6 +9,11 @@ export type CheckValueWire =
 
 export type Status = 'pass' | 'fail' | 'warn' | 'info';
 
+/** Anti-malware definitions older than this are no longer considered current. */
+const SIGNATURE_FRESH_DAYS = 7;
+/** Beyond this the definitions are stale enough to be a finding, not a warning. */
+const SIGNATURE_STALE_DAYS = 30;
+
 export function evaluateCompliance(key: string, val: CheckValueWire): Status {
   switch (key) {
     case 'disk_encryption.enabled':
@@ -19,6 +24,16 @@ export function evaluateCompliance(key: string, val: CheckValueWire): Status {
       return val.type === 'bool' && val.value ? 'pass' : 'fail';
     case 'edr.present':
       return val.type === 'bool' && val.value ? 'pass' : 'warn';
+    case 'edr.signature_last_updated': {
+      // Empty means the AV did not report definition state (e.g. Defender is
+      // passive behind a third-party EDR) — absence is not a failure.
+      if (val.type !== 'string' || val.value === '') return 'info';
+      const updatedAt = Date.parse(val.value);
+      if (Number.isNaN(updatedAt)) return 'info';
+      const ageDays = (Date.now() - updatedAt) / 86_400_000;
+      if (ageDays <= SIGNATURE_FRESH_DAYS) return 'pass';
+      return ageDays <= SIGNATURE_STALE_DAYS ? 'warn' : 'fail';
+    }
     case 'mdm.enrolled':
     case 'screen_lock.managed_by_mdm':
       return val.type === 'bool' && val.value ? 'pass' : 'info';

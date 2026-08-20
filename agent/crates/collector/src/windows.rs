@@ -86,6 +86,26 @@ pub mod parsers {
         false
     }
 
+    /// Parse the fixed-format `Get-MpComputerStatus` projection emitted by
+    /// `check_edr_signature`. Returns (signature_version, last_updated_iso);
+    /// either component is empty when Defender did not report it.
+    pub fn parse_edr_signature(output: &str) -> (String, String) {
+        let mut version = String::new();
+        let mut last_updated = String::new();
+        for line in output.lines() {
+            // Split on the FIRST colon only — the timestamp value contains colons.
+            let Some((field, rest)) = line.trim().split_once(':') else {
+                continue;
+            };
+            match field.trim().to_lowercase().as_str() {
+                "antivirussignatureversion" => version = rest.trim().to_string(),
+                "antivirussignaturelastupdated" => last_updated = rest.trim().to_string(),
+                _ => {}
+            }
+        }
+        (version, last_updated)
+    }
+
     /// Parse hardware info from Get-CimInstance Win32_ComputerSystem output.
     /// Returns (manufacturer, model).
     pub fn parse_hardware_info(output: &str) -> (String, String) {
@@ -392,6 +412,37 @@ fn check_edr_presence() -> CheckResult {
     }
 }
 
+/// Definition/signature currency for Microsoft Defender for Endpoint. Emits
+/// empty strings when Defender is not the active AV (a third-party EDR leaves
+/// Defender passive) — the consumer treats empty as "not reported".
+#[cfg(target_os = "windows")]
+fn check_edr_signature() -> Vec<CheckResult> {
+    // Project the DateTime to a fixed UTC format. PowerShell's default DateTime
+    // rendering is locale-dependent and would not parse reliably.
+    let output = ps(
+        "Get-MpComputerStatus -ErrorAction SilentlyContinue | ForEach-Object { \
+         \"AntivirusSignatureVersion : $($_.AntivirusSignatureVersion)\"; \
+         \"AntivirusSignatureLastUpdated : \
+         $($_.AntivirusSignatureLastUpdated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))\" }",
+    );
+    let (version, last_updated) = parsers::parse_edr_signature(&output);
+    let observed_at = now_iso();
+    vec![
+        CheckResult {
+            key: "edr.signature_version".to_string(),
+            value: CheckValue::Str(version),
+            observed_at: observed_at.clone(),
+            source: "windows_defender".to_string(),
+        },
+        CheckResult {
+            key: "edr.signature_last_updated".to_string(),
+            value: CheckValue::Str(last_updated),
+            observed_at,
+            source: "windows_defender".to_string(),
+        },
+    ]
+}
+
 #[cfg(target_os = "windows")]
 fn check_mdm() -> CheckResult {
     let output = Command::new("dsregcmd")
@@ -603,6 +654,7 @@ pub fn collect_all() -> Vec<CheckResult> {
         check_ssh_daemon_enabled(),
         check_ssh_authorized_key_count(),
     ];
+    checks.extend(check_edr_signature());
     checks.extend(check_hardware_info());
     checks
 }
@@ -750,6 +802,29 @@ mod tests {
     fn ssh_daemon_running_lowercase() {
         assert!(parse_ssh_daemon_enabled("running"));
     }
+    #[test]
+    fn edr_signature_parses_version_and_timestamp() {
+        let out = "AntivirusSignatureVersion : 1.427.360.0\nAntivirusSignatureLastUpdated : 2026-08-19T06:12:00Z\n";
+        assert_eq!(
+            parse_edr_signature(out),
+            ("1.427.360.0".to_string(), "2026-08-19T06:12:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn edr_signature_empty_when_defender_silent() {
+        assert_eq!(parse_edr_signature(""), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn edr_signature_version_only() {
+        let out = "AntivirusSignatureVersion : 1.427.360.0\n";
+        assert_eq!(
+            parse_edr_signature(out),
+            ("1.427.360.0".to_string(), String::new())
+        );
+    }
+
     #[test]
     fn ssh_daemon_stopped() {
         assert!(!parse_ssh_daemon_enabled("Stopped\n"));

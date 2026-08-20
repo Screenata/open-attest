@@ -23,13 +23,15 @@ open-attest is built for teams of 5-50 where the CTO is also the IT admin. Deplo
 
 ## What it does
 
-open-attest runs on your team's laptops and reports security posture to a central server. It collects 20 posture checks:
+open-attest runs on your team's laptops and reports security posture to a central server. It collects 23 posture checks:
 
 - Disk encryption (FileVault / BitLocker / LUKS)
 - Firewall status
 - Screen lock timeout, password requirement, and MDM-managed lock policy
 - OS version, hardware identity (manufacturer, model, serial)
-- EDR/antivirus presence (XProtect, CrowdStrike, SentinelOne, AppArmor, SELinux, etc.)
+- Third-party EDR/antivirus presence (CrowdStrike, SentinelOne, Sophos, Jamf Protect, ClamAV, etc.) — OS-built-in protection does not count, see below
+- Linux Security Module enforcement (AppArmor / SELinux), reported separately from anti-malware
+- Anti-malware definition currency — signature version and last-update timestamp (Defender for Endpoint on Windows, XProtect on macOS)
 - Password policy and login password
 - Local admin membership + full admin roster + full local-user roster
 - MDM enrollment
@@ -110,7 +112,10 @@ open-attest uninstall       # remove agent and daemon
 | Local users | `users.local` | string[] | dscl /Users | Get-LocalUser | /etc/passwd | Available |
 | Local administrators | `users.admins` | string[] | dscl /Groups/admin | net localgroup Administrators | /etc/group (sudo/wheel) | Available |
 | MDM enrollment | `mdm.enrolled` | bool | profiles | dsregcmd | N/A | Available |
-| EDR/AV presence | `edr.present` | bool | XProtect + process scan | SecurityCenter2 + Defender | Process scan + AppArmor/SELinux | Available |
+| EDR/AV presence | `edr.present` | bool | Third-party process + system-extension scan | SecurityCenter2 + Defender | Anti-malware process scan | Available |
+| LSM enforcing | `lsm.enforcing` | bool | — | — | aa-status / getenforce | Available |
+| Anti-malware signature version | `edr.signature_version` | string | XProtect.bundle `CFBundleShortVersionString` | `Get-MpComputerStatus` AntivirusSignatureVersion | — | Available |
+| Anti-malware definitions last updated | `edr.signature_last_updated` | string (RFC3339) | XProtect.bundle mtime | `Get-MpComputerStatus` AntivirusSignatureLastUpdated | — | Available |
 | SSH daemon enabled | `ssh.daemon_enabled` | bool | launchctl | Get-Service sshd | systemctl + ps | Available |
 | SSH authorized key count | `ssh.authorized_key_count` | int | ~/.ssh/authorized_keys scan | %ProgramData%\ssh + per-user | /home/*/.ssh + /root/.ssh | Available |
 | Local admin (current user) | `local_admin.is_admin` | bool | dscl | net localgroup | /etc/group (sudo/wheel) | Available |
@@ -120,6 +125,8 @@ open-attest uninstall       # remove agent and daemon
 | App CVEs (derived from `apps.installed`) | `apps.cves` | string[] | offline CVE feed cross-ref | offline CVE feed cross-ref | offline CVE feed cross-ref | Planned |
 | Browser enterprise policy | `browser.policies` | string[] | managed plist | managed registry | managed prefs | Planned |
 | Dotfile secret heuristics | `secrets_in_dotfiles` | int | ~/.aws/credentials, ~/.ssh/id_*, ~/.netrc count | per-user | per-user | Planned |
+
+`edr.present` reports third-party anti-malware only. On macOS it ignores Apple's built-in XProtect and MRT: `XProtect.bundle` ships with every macOS install, so counting it made the check return true on every Mac — useless as fleet-coverage evidence. On Linux it ignores AppArmor and SELinux, which are mandatory-access-control frameworks rather than anti-malware. Neither signal is discarded: XProtect's version and definition date are reported as `edr.signature_version` / `edr.signature_last_updated` with source `xprotect`, and LSM enforcement as `lsm.enforcing`. A host with no third-party agent now reports `edr.present = false`.
 
 Heavy lists (`apps.installed`, planned `browser_extensions`) ship on a 24-hour cadence; everything else flows on every snapshot. Lists are capped at 1000 entries with a `…and N more` sentinel.
 
@@ -140,7 +147,10 @@ The CLI and admin UI evaluate checks against default thresholds:
 | Password min length | must be ≥ 8 characters | Pass / Fail |
 | MDM enrollment | preferred when present | Pass / — |
 | MDM-managed screen lock | preferred when present | Pass / — |
-| EDR/AV presence | should be present | Pass / Warning |
+| EDR/AV presence | a third-party agent should be present | Pass / Warning |
+| LSM enforcing | informational | — |
+| Anti-malware definitions last updated | ≤ 7 days fresh, ≤ 30 days stale, older is a finding; empty is informational | Pass / Warning / Fail |
+| Anti-malware signature version | informational | — |
 | Local admin (current user) | user should not be admin | Pass / Warning |
 | SSH authorized key count | warn if any keys present | Pass / Warning |
 | SSH daemon enabled | informational | — |
